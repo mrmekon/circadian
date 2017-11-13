@@ -71,6 +71,8 @@ process_block = ^dd$,^rsync$,^apt-get$,^dpkg$,^cp$,^mv$
 [actions]
 # How long the system must be idle before the idle action is taken.
 #
+# Empty or 0 is disabled.
+#
 # NOTE: only the '*_input' heuristics need to be continuously idle without
 # interruption.  The other heuristics only need to be true instantaneously
 # after idle_time has passed.  (ex: with an idle_time of 1 hour, the mouse

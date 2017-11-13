@@ -26,14 +26,33 @@ use regex::Regex;
 extern crate glob;
 use glob::glob;
 
+extern crate clap;
+
+extern crate ini;
+use ini::Ini;
+
 use std::error::Error;
 use std::process::Stdio;
 use std::process::Command;
 
 pub struct CircadianError(String);
+impl std::fmt::Display for CircadianError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 impl std::fmt::Debug for CircadianError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+impl std::error::Error for CircadianError {
+    fn description(&self) -> &str {
+        self.0.as_str()
+    }
+
+    fn cause(&self) -> Option<&std::error::Error> {
+        None
     }
 }
 impl From<std::io::Error> for CircadianError {
@@ -58,6 +77,11 @@ impl From<std::string::FromUtf8Error> for CircadianError {
 }
 impl From<glob::PatternError> for CircadianError {
     fn from(error: glob::PatternError) -> Self {
+        CircadianError(error.description().to_owned())
+    }
+}
+impl From<ini::ini::Error> for CircadianError {
+    fn from(error: ini::ini::Error) -> Self {
         CircadianError(error.description().to_owned())
     }
 }
@@ -260,8 +284,95 @@ fn exist_audio() -> ExistResult {
     Ok(count > 0)
 }
 
+struct CircadianLaunchOptions {
+    config_file: String,
+    //script_dir: String,
+}
+
+#[derive(Default,Debug)]
+struct CircadianConfig {
+    idle_time: u64,
+    auto_wake: Option<String>,
+    on_idle: Option<String>,
+    on_wake: Option<String>,
+    tty_input: bool,
+    x11_input: bool,
+    ssh_block: bool,
+    smb_block: bool,
+    audio_block: bool,
+    max_cpu_load: Option<f64>,
+    process_block: Vec<String>,
+}
+
+fn read_config(file_path: &str) -> Result<CircadianConfig, CircadianError> {
+    println!("Reading config from file: {}", file_path);
+    let i = Ini::load_from_file(file_path)?;
+    let mut config: CircadianConfig = Default::default();
+    if let Some(section) = i.section(Some("actions".to_owned())) {
+        config.idle_time = section.get("idle_time")
+            .map_or(0, |x| if x.len() > 0 {
+                let (body,suffix) = x.split_at(x.len()-1);
+                let num: u64 = match suffix {
+                    "m" => body.parse::<u64>().unwrap_or(0) * 60,
+                    "h" => body.parse::<u64>().unwrap_or(0) * 60 * 60,
+                    _ => x.parse::<u64>().unwrap_or(0),
+                };
+                num
+            } else {0});
+        config.auto_wake = section.get("auto_wake")
+            .and_then(|x| if x.len() > 0 {Some(x.to_owned())} else {None});
+        config.on_idle = section.get("on_idle")
+            .and_then(|x| if x.len() > 0 {Some(x.to_owned())} else {None});
+        config.on_wake = section.get("on_wake")
+            .and_then(|x| if x.len() > 0 {Some(x.to_owned())} else {None});
+    }
+    fn read_bool(s: &std::collections::HashMap<String,String>,
+                 key: &str) -> bool {
+        match s.get(key).unwrap_or(&"no".to_string()).to_lowercase().as_str() {
+            "yes" | "true" | "1" => true,
+            _ => false,
+        }
+    }
+    if let Some(section) = i.section(Some("heuristics".to_owned())) {
+        config.tty_input = read_bool(section, "tty_input");
+        config.x11_input = read_bool(section, "x11_input");
+        config.ssh_block = read_bool(section, "ssh_block");
+        config.smb_block = read_bool(section, "smb_block");
+        config.audio_block = read_bool(section, "audio_block");
+        config.max_cpu_load = section.get("max_cpu_load")
+            .and_then(|x| if x.len() > 0
+                      {Some(x.parse::<f64>().unwrap_or(999.0))} else {None});
+        if let Some(proc_str) = section.get("process_block") {
+            let proc_list = proc_str.split(",");
+            config.process_block = proc_list
+                .map(|x| x.trim().to_owned()).collect();
+        }
+    }
+    Ok(config)
+}
+
+fn read_cmdline() -> CircadianLaunchOptions {
+    let matches = clap::App::new("circadian")
+        .version(env!("CARGO_PKG_VERSION"))
+        .author(env!("CARGO_PKG_AUTHORS"))
+        .about(env!("CARGO_PKG_DESCRIPTION"))
+        .args_from_usage(
+            "-f, --config=[FILE] ''
+             -d, --script-dir=[DIR] ''")
+        .get_matches();
+    let config = matches.value_of("config").unwrap_or("/etc/circadian.conf");
+    //let script_dir = matches.value_of("script-dir").unwrap_or("");
+    //println!("Script dir: {}", script_dir);
+    CircadianLaunchOptions {
+        config_file: config.to_owned(),
+        //script_dir: script_dir.to_owned(),
+    }
+}
+
 fn main() {
-    println!("Hello, world!");
+    let launch_opts = read_cmdline();
+    let config = read_config(&launch_opts.config_file);
+    println!("{:?}", config);
     println!("Sec: {:?}", parse_w_time("10.45s"));
     println!("Sec: {:?}", parse_w_time("1:11"));
     println!("Sec: {:?}", parse_w_time("0:10m"));

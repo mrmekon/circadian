@@ -17,3 +17,4 @@ lto = true
 regex = "0.2"
 glob = "0.2.11"
 rust-ini = "0.10.0"
+clap = "2.27.1"
