@@ -1,7 +1,14 @@
 [package]
 name = "circadian"
 version = "0.1.0"
-authors = ["mrmekon"]
+authors = ["Trevor Bentley <trevor@trevorbentley.com>"]
+description = "Linux auto-suspend/wake power management daemon"
+keywords = ["linux", "power", "suspend", "daemon", "service"]
+categories = []
+homepage = "https://github.com/mrmekon/circadian"
+repository = "https://github.com/mrmekon/circadian"
+documentation = "https://github.com/mrmekon/circadian"
+license = "GPL-3.0"
 
 [profile.release]
 lto = true
