@@ -115,7 +115,7 @@ fn parse_w_time(time_str: &str) -> Result<u32, CircadianError> {
     Ok((hours*60*60) + (mins*60) + secs)
 }
 
-// Call 'w' command and return minimum idle time
+/// Call 'w' command and return minimum idle time
 fn idle_w() -> IdleResult {
     let w_output = Command::new("w")
         .arg("-hus")
@@ -136,7 +136,7 @@ fn idle_w() -> IdleResult {
     Ok(idle_times.iter().cloned().fold(std::u32::MAX, std::cmp::min))
 }
 
-// Call 'xssstate' command and return idle time
+/// Call 'xssstate' command and return idle time
 fn idle_xssstate() -> IdleResult {
     let output = Command::new("xssstate")
         .env("DISPLAY", ":0.0")
@@ -148,7 +148,7 @@ fn idle_xssstate() -> IdleResult {
     Ok(idle_str.parse::<u32>().unwrap_or(0)/1000)
 }
 
-// Call 'xprintidle' command and return idle time
+/// Call 'xprintidle' command and return idle time
 fn idle_xprintidle() -> IdleResult {
     let output = Command::new("xprintidle")
         .env("DISPLAY", ":0.0")
@@ -159,12 +159,12 @@ fn idle_xprintidle() -> IdleResult {
     Ok(idle_str.parse::<u32>().unwrap_or(0)/1000)
 }
 
-// Compare whether 'uptime' 5-min CPU usage compares
-// to the given thresh with the given cmp function.
-//
-// ex: thresh_cpu(CpuHistory::Min1, 0.1, std::cmp::PartialOrd::lt) returns true
-//     if the 5-min CPU usage is less than 0.1 for the past minute
-//
+/// Compare whether 'uptime' 5-min CPU usage compares
+/// to the given thresh with the given cmp function.
+///
+/// ex: thresh_cpu(CpuHistory::Min1, 0.1, std::cmp::PartialOrd::lt) returns true
+///     if the 5-min CPU usage is less than 0.1 for the past minute
+///
 fn thresh_cpu<C>(history: CpuHistory, thresh: f64, cmp: C) -> ThreshResult
     where C: Fn(&f64, &f64) -> bool {
     let output = Command::new("uptime")
@@ -191,6 +191,7 @@ fn thresh_cpu<C>(history: CpuHistory, thresh: f64, cmp: C) -> ThreshResult
     Ok(*idle.get(idx).unwrap_or(&false))
 }
 
+/// Determine whether a process (by name regex) is running.
 fn exist_process(prc: &str) -> ExistResult {
     let output = Command::new("pgrep")
         .arg("-c")
@@ -202,6 +203,7 @@ fn exist_process(prc: &str) -> ExistResult {
     Ok(count > 0)
 }
 
+/// Determine whether the given type of network connection is established.
 fn exist_net_connection(conn: NetConnection) -> ExistResult {
     let output = Command::new("netstat")
         .arg("-tnpa")
@@ -233,6 +235,7 @@ fn exist_net_connection(conn: NetConnection) -> ExistResult {
     Ok(connections.len() > 0)
 }
 
+/// Determine whether audio is actively playing on any ALSA interface.
 fn exist_audio() -> ExistResult {
     let mut count = 0;
     for device in glob("/proc/asound/card*/pcm*/sub*/status")? {
