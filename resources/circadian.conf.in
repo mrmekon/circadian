@@ -8,6 +8,8 @@
 # virtual terminals, SSH sessions, etc.  Resets whenever a TTY determines
 # that it has input, which is typically keypresses.
 #
+# At least one of tty_input or x11_input must be 'yes'.
+#
 # Monitors the idle column of the 'w' command.
 #
 # Default: yes
@@ -18,6 +20,8 @@ tty_input = yes
 # any user input device (keyboard, mouse), but can additionally be reset
 # by certain programs.  Typically, any program that prevents the screensaver
 # from displaying will also reset this.
+#
+# At least one of tty_input or x11_input must be 'yes'.
 #
 # Monitors xprintidle and xssstate
 #
@@ -33,12 +37,15 @@ x11_input = yes
 # Default: yes
 ssh_block = yes
 
-# Whether active Samba connections block the system from being idle.
+# Whether active Samba connections block the system from being idle.  Note
+# that GVfs sometimes makes local loopback connections to a local Samba
+# share, which will prevent idle.  This is disabled by default because of
+# the aggressiveness of SMB browsing clients.
 #
 # Monitors netstat
 #
-# Default: yes
-smb_block = yes
+# Default: no
+smb_block = no
 
 # Whether active audio playback blocks the system from being idle.
 #
@@ -89,18 +96,6 @@ process_block = ^dd$,^rsync$,^apt-get$,^dpkg$,^cp$,^mv$
 # Default: 120 minutes
 idle_time = 120m
 
-# Time of day (in local timezone) to automatically wake the machine if it
-# is sleeping.  Specify in 24-hour time format with a colon.  Leave blank
-# or comment out for no wake time.
-#
-# This depends on the hardware RTC being enabled and supported by your kernel.
-#
-# Example:
-#   auto_wake = 16:00
-#
-# Default: disabled
-auto_wake =
-
 # Command to execute when the system is determined to have been idle for at
 # least idle_time.  Typically a suspend or hibernate command.
 #
@@ -116,5 +111,19 @@ auto_wake =
 # Default: pm-suspend
 on_idle = ""
 
+# Time of day (in local timezone) to automatically wake the machine if it
+# is sleeping.  Specify in 24-hour time format with a colon.  Leave blank
+# or comment out for no wake time.
+#
+# This depends on the hardware RTC being enabled and supported by your kernel.
+#
+# Example:
+#   auto_wake = 16:00
+#
+# Default: disabled
+auto_wake =
+
 # Command to execute after waking from a sleep.
+#
+# Default: <empty>
 on_wake = ""

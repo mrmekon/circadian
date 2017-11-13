@@ -369,22 +369,101 @@ fn read_cmdline() -> CircadianLaunchOptions {
     }
 }
 
-fn main() {
-    let launch_opts = read_cmdline();
-    let config = read_config(&launch_opts.config_file);
-    println!("{:?}", config);
+#[allow(dead_code)]
+fn test() {
     println!("Sec: {:?}", parse_w_time("10.45s"));
     println!("Sec: {:?}", parse_w_time("1:11"));
     println!("Sec: {:?}", parse_w_time("0:10m"));
+    println!("w min: {:?}", idle_w());
+    println!("xssstate min: {:?}", idle_xssstate());
+    println!("xprintidle min: {:?}", idle_xprintidle());
+    println!("cpu: {:?}", thresh_cpu(CpuHistory::Min5, 0.3, std::cmp::PartialOrd::lt));
+    println!("ssh: {:?}", exist_net_connection(NetConnection::SSH));
+    println!("smb: {:?}", exist_net_connection(NetConnection::SMB));
+    println!("iotop: {:?}", exist_process("^iotop$"));
+    println!("audio: {:?}", exist_audio());
+}
+
+fn main() {
+    println!("Circadian launching.");
+    let launch_opts = read_cmdline();
+    let config = read_config(&launch_opts.config_file)
+        .unwrap_or_else(|x| {
+            println!("{}", x);
+            println!("Could not open config file.  Exiting.");
+            std::process::exit(1);
+        });
+    println!("{:?}", config);
+    if !config.tty_input && !config.x11_input {
+        println!("tty_input or x11_input must be enabled.  Exiting.");
+        std::process::exit(1);
+    }
+    if config.tty_input && idle_w().is_err() {
+        println!("'w' command required by tty_input failed.  Exiting.");
+        std::process::exit(1);
+    }
+    if config.x11_input &&
+        idle_xssstate().is_err() &&
+        idle_xprintidle().is_err() {
+            println!("Both 'xssstate' and 'xprintidle' commands required by x11_input failed.  Exiting.");
+            std::process::exit(1);
+        }
+    if config.max_cpu_load.is_some() &&
+        thresh_cpu(CpuHistory::Min1, 0.0, std::cmp::PartialOrd::lt).is_err() {
+            println!("'uptime' command required by max_cpu_load failed.  Exiting.");
+            std::process::exit(1);
+        }
+    if (config.ssh_block || config.smb_block) &&
+        exist_net_connection(NetConnection::SSH).is_err() {
+        println!("'netstat' command required by ssh/smb_block failed.  Exiting.");
+        std::process::exit(1);
+        }
+    if config.audio_block && exist_audio().is_err() {
+        println!("'/proc/asound/' required by audio_block is unreadable.  Exiting.");
+        std::process::exit(1);
+    }
+    if config.process_block.len() > 0 && exist_process("").is_err() {
+        println!("'pgrep' required by process_block failed.  Exiting.");
+        std::process::exit(1);
+    }
+    if config.idle_time == 0 {
+        println!("Idle time disabled.  Nothing to do.  Exiting.");
+        std::process::exit(1);
+    }
+
+    println!("Configuration valid.  Idle detection starting.");
     loop {
-        println!("w min: {:?}", idle_w());
-        println!("xssstate min: {:?}", idle_xssstate());
-        println!("xprintidle min: {:?}", idle_xprintidle());
-        println!("cpu: {:?}", thresh_cpu(CpuHistory::Min5, 0.3, std::cmp::PartialOrd::lt));
-        println!("ssh: {:?}", exist_net_connection(NetConnection::SSH));
-        println!("smb: {:?}", exist_net_connection(NetConnection::SMB));
-        println!("iotop: {:?}", exist_process("^iotop$"));
-        println!("audio: {:?}", exist_audio());
-        std::thread::sleep(std::time::Duration::from_millis(2000));
+        let tty_idle = idle_w().unwrap_or(0);
+        let x11_idle = std::cmp::min(idle_xssstate().unwrap_or(0),
+                                     idle_xprintidle().unwrap_or(0));
+        let min_idle: u64 = match (config.tty_input, config.x11_input) {
+            (true,true) => std::cmp::min(tty_idle, x11_idle) as u64,
+            (true,false) => tty_idle as u64,
+            (false,_) => x11_idle as u64,
+        };
+        let idle_remain: u64 =
+            std::cmp::max(config.idle_time as i64 - min_idle as i64, 0) as u64;
+        if idle_remain == 0 {
+            let pass_cpu = thresh_cpu(CpuHistory::Min1,
+                                      config.max_cpu_load.unwrap_or(999.0),
+                                      std::cmp::PartialOrd::lt).unwrap_or(false);
+            let pass_ssh = !exist_net_connection(NetConnection::SSH).unwrap_or(false);
+            let pass_smb = !exist_net_connection(NetConnection::SMB).unwrap_or(false);
+            let pass_audio = !exist_audio().unwrap_or(false);
+            let pass_proc = !config.process_block.iter()
+                .map(|p| exist_process(p).unwrap_or(false))
+                .fold(false, |acc,p| acc || p);
+            println!("cpu: {}, ssh {}, smb: {}, audio: {}, proc: {}",
+                     pass_cpu, pass_ssh, pass_smb, pass_audio, pass_proc);
+            if (config.max_cpu_load.is_none() || pass_cpu) &&
+                (!config.ssh_block || pass_ssh) &&
+                (!config.smb_block || pass_smb) &&
+                (!config.audio_block || pass_audio) {
+                    println!("IDLE DETECTED.");
+                    // TODO: on_idle()
+            }
+        }
+        let sleep_time = std::cmp::max(idle_remain, 5000);
+        std::thread::sleep(std::time::Duration::from_millis(sleep_time));
     }
 }
