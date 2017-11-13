@@ -8,3 +8,5 @@ lto = true
 
 [dependencies]
 regex = "0.2"
+glob = "0.2.11"
+rust-ini = "0.10.0"

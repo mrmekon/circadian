@@ -1,0 +1,118 @@
+##
+## Heuristics
+##
+## Options used to detect whether the system is idle.
+##
+[heuristics]
+# Whether TTY input on *any* TTY blocks idle.  This includes X terminals,
+# virtual terminals, SSH sessions, etc.  Resets whenever a TTY determines
+# that it has input, which is typically keypresses.
+#
+# Monitors the idle column of the 'w' command.
+#
+# Default: yes
+tty_input = yes
+
+# Whether X11 idle detection is used, the specifics of which are determined
+# by your particular combination of window/display manager.  This is normally
+# any user input device (keyboard, mouse), but can additionally be reset
+# by certain programs.  Typically, any program that prevents the screensaver
+# from displaying will also reset this.
+#
+# Monitors xprintidle and xssstate
+#
+# Default: yes
+x11_input = yes
+
+# Whether active SSH connections block the system from being idle.  Both
+# inbound and outbound connections will prevent the system from going idle
+# if this is 'yes'.
+#
+# Monitors netstat
+#
+# Default: yes
+ssh_block = yes
+
+# Whether active Samba connections block the system from being idle.
+#
+# Monitors netstat
+#
+# Default: yes
+smb_block = yes
+
+# Whether active audio playback blocks the system from being idle.
+#
+# Monitors /proc/asound
+#
+# Default: yes
+audio_block = yes
+
+# Max CPU load for the past minute to be considered idle.  This is the
+# unscaled load, can go above 1.0 even on non-maxed multi-core systems.
+# Set to 999.0 or comment out to disable.
+#
+# Monitors uptime
+#
+# Default: 0.5
+max_cpu_load = 0.5
+
+# Specific processes that block the system from being considered idle if
+# they are running.  Supply as a comma separated list.  Basic regex is
+# permitted, and the format "^full-process-name$" is recommended.
+#
+# Monitors pgrep
+#
+# Example:
+#   process_block = mplayer,vlc
+#
+# Default: some common file transfer utils
+process_block = ^dd$,^rsync$,^apt-get$,^dpkg$,^cp$,^mv$
+
+[actions]
+# How long the system must be idle before the idle action is taken.
+#
+# NOTE: only the '*_input' heuristics need to be continuously idle without
+# interruption.  The other heuristics only need to be true instantaneously
+# after idle_time has passed.  (ex: with an idle_time of 1 hour, the mouse
+# must not move at all for 1 hour, but SSH connections can come and go
+# during that hour.  The on_idle command will run the next time that _at least_
+# 1 hour has gone by without mouse movement, and no SSH connections are
+# currently active.)
+#
+# Suffix:
+#  <none> - seconds
+#  m - minutes
+#  h - hours
+#
+# Default: 120 minutes
+idle_time = 120m
+
+# Time of day (in local timezone) to automatically wake the machine if it
+# is sleeping.  Specify in 24-hour time format with a colon.  Leave blank
+# or comment out for no wake time.
+#
+# This depends on the hardware RTC being enabled and supported by your kernel.
+#
+# Example:
+#   auto_wake = 16:00
+#
+# Default: disabled
+auto_wake =
+
+# Command to execute when the system is determined to have been idle for at
+# least idle_time.  Typically a suspend or hibernate command.
+#
+# Common options:
+#  * pm-suspend
+#  * pm-hibernate
+#  * pm-suspend-hybrid
+#  * systemctl suspend
+#  * systemctl hibernate
+#  * dbus-send --system --print-reply --dest="org.freedesktop.UPower" \
+#      /org/freedesktop/UPower org.freedesktop.UPower.Suspend
+#
+# Default: pm-suspend
+on_idle = ""
+
+# Command to execute after waking from a sleep.
+on_wake = ""

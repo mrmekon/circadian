@@ -1,6 +1,9 @@
 extern crate regex;
 use regex::Regex;
 
+extern crate glob;
+use glob::glob;
+
 use std::error::Error;
 use std::process::Stdio;
 use std::process::Command;
@@ -23,6 +26,16 @@ impl From<regex::Error> for CircadianError {
 }
 impl From<std::num::ParseIntError> for CircadianError {
     fn from(error: std::num::ParseIntError) -> Self {
+        CircadianError(error.description().to_owned())
+    }
+}
+impl From<std::string::FromUtf8Error> for CircadianError {
+    fn from(error: std::string::FromUtf8Error) -> Self {
+        CircadianError(error.description().to_owned())
+    }
+}
+impl From<glob::PatternError> for CircadianError {
+    fn from(error: glob::PatternError) -> Self {
         CircadianError(error.description().to_owned())
     }
 }
@@ -198,6 +211,30 @@ fn exist_net_connection(conn: NetConnection) -> ExistResult {
     Ok(connections.len() > 0)
 }
 
+fn exist_audio() -> ExistResult {
+    let mut count = 0;
+    for device in glob("/proc/asound/card*/pcm*/sub*/status")? {
+        if let Ok(path) = device {
+            let output = Command::new("cat")
+                .arg(path)
+                .stderr(Stdio::null())
+                .stdout(Stdio::piped()).spawn()?;
+            let stdout = output.stdout
+                .ok_or(CircadianError("pacmd failed".to_string()))?;
+            let output = Command::new("grep")
+                .arg("state:")
+                .stdin(stdout)
+                .output()?;
+            let output_str = String::from_utf8(output.stdout)?;
+            let lines: Vec<&str> = output_str.split("\n")
+                .filter(|l| l.len() > 0)
+                .collect();
+            count += lines.len();
+        }
+    }
+    Ok(count > 0)
+}
+
 fn main() {
     println!("Hello, world!");
     println!("Sec: {:?}", parse_w_time("10.45s"));
@@ -211,6 +248,7 @@ fn main() {
         println!("ssh: {:?}", exist_net_connection(NetConnection::SSH));
         println!("smb: {:?}", exist_net_connection(NetConnection::SMB));
         println!("iotop: {:?}", exist_process("^iotop$"));
+        println!("audio: {:?}", exist_audio());
         std::thread::sleep(std::time::Duration::from_millis(2000));
     }
 }
