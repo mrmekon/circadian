@@ -21,9 +21,21 @@ impl From<regex::Error> for CircadianError {
         CircadianError(error.description().to_owned())
     }
 }
+impl From<std::num::ParseIntError> for CircadianError {
+    fn from(error: std::num::ParseIntError) -> Self {
+        CircadianError(error.description().to_owned())
+    }
+}
 
 type IdleResult = Result<u32, CircadianError>;
 type ThreshResult = Result<bool, CircadianError>;
+type ExistResult = Result<bool, CircadianError>;
+
+#[allow(dead_code)]
+enum NetConnection {
+    SSH,
+    SMB
+}
 
 #[allow(dead_code)]
 enum CpuHistory {
@@ -144,6 +156,48 @@ fn thresh_cpu<C>(history: CpuHistory, thresh: f64, cmp: C) -> ThreshResult
     Ok(*idle.get(idx).unwrap_or(&false))
 }
 
+fn exist_process(prc: &str) -> ExistResult {
+    let output = Command::new("pgrep")
+        .arg("-c")
+        .arg(prc)
+        .output()?;
+    let output = &output.stdout[0..output.stdout.len()-1];
+    let count: u32 = String::from_utf8(output.to_vec())
+        .unwrap_or(String::new()).parse::<u32>()?;
+    Ok(count > 0)
+}
+
+fn exist_net_connection(conn: NetConnection) -> ExistResult {
+    let output = Command::new("netstat")
+        .arg("-tnpa")
+        .stderr(Stdio::null())
+        .stdout(Stdio::piped()).spawn()?;
+    let stdout = output.stdout
+        .ok_or(CircadianError("netstat command has no output".to_string()))?;
+    let output = Command::new("grep")
+        .arg("ESTABLISHED")
+        .stdin(stdout)
+        .stdout(Stdio::piped()).spawn()?;
+    let stdout = output.stdout
+        .ok_or(CircadianError("netstat command has no connections".to_string()))?;
+    let pattern = match conn {
+        NetConnection::SSH => "[0-9]+/ssh[d]*",
+        NetConnection::SMB => "[0-9]+/smb[d]*",
+    };
+    let output = Command::new("grep")
+        .arg("-E")
+        .arg(pattern)
+        .stdin(stdout)
+        .output()?;
+    let output = String::from_utf8(output.stdout)
+        .unwrap_or(String::new());
+    let connections: Vec<&str> = output
+        .split("\n")
+        .filter(|l| l.len() > 0)
+        .collect();
+    Ok(connections.len() > 0)
+}
+
 fn main() {
     println!("Hello, world!");
     println!("Sec: {:?}", parse_w_time("10.45s"));
@@ -153,7 +207,10 @@ fn main() {
         println!("w min: {:?}", idle_w());
         println!("xssstate min: {:?}", idle_xssstate());
         println!("xprintidle min: {:?}", idle_xprintidle());
-        println!("cpu: {:?}", thresh_cpu(CpuHistory::Min5, 0.1, std::cmp::PartialOrd::lt));
+        println!("cpu: {:?}", thresh_cpu(CpuHistory::Min5, 0.3, std::cmp::PartialOrd::lt));
+        println!("ssh: {:?}", exist_net_connection(NetConnection::SSH));
+        println!("smb: {:?}", exist_net_connection(NetConnection::SMB));
+        println!("iotop: {:?}", exist_process("^iotop$"));
         std::thread::sleep(std::time::Duration::from_millis(2000));
     }
 }

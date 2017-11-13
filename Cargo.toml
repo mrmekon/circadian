@@ -3,5 +3,8 @@ name = "circadian"
 version = "0.1.0"
 authors = ["mrmekon"]
 
+[profile.release]
+lto = true
+
 [dependencies]
 regex = "0.2"
