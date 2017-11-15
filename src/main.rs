@@ -41,6 +41,8 @@ use std::process::Stdio;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, ATOMIC_BOOL_INIT, Ordering};
 
+use std::os::unix::process::CommandExt;
+
 pub struct CircadianError(String);
 
 impl std::fmt::Display for CircadianError {
@@ -133,6 +135,7 @@ struct IdleResponse {
     x11_idle: u32,
     x11_enabled: bool,
     min_idle: u32,
+    idle_target: u64,
     idle_remain: u64,
     is_idle: bool,
 }
@@ -168,6 +171,7 @@ impl std::fmt::Display for IdleResponse {
             let _ = write!(f, "{:<16}: {}\n", name, var);
         }
         let _ = write!(f, "{:<16}: {}\n", "Idle (min)", self.min_idle);
+        let _ = write!(f, "{:<16}: {}\n", "Idle target", self.idle_target);
         let _ = write!(f, "{:<16}: {}\n", "Until idle", self.idle_remain);
         let _ = write!(f, "{:<16}: {}\n", "IDLE?", self.is_idle);
         Ok(())
@@ -291,8 +295,13 @@ fn idle_w() -> IdleResult {
     Ok(idle_times.iter().cloned().fold(std::u32::MAX, std::cmp::min))
 }
 
-/// Call 'xssstate' command and return idle time
-fn idle_xssstate() -> IdleResult {
+/// Call idle command for each X display
+///
+/// 'cmd' should be a unix command that, given args 'args', prints the idle
+/// time in milliseconds.  It will be run with the DISPLAY env variable set
+/// and with the uid of the user that owns the DISPLAY, for every running
+/// X display.  The minimum of all found idle times is returned.
+fn idle_fn(cmd: &str, args: Vec<&str>) -> IdleResult {
     let mut display_mins: Vec<u32> = Vec::<u32>::new();
     for device in glob("/tmp/.X11-unix/X*")? {
         let device: String = match device {
@@ -300,31 +309,31 @@ fn idle_xssstate() -> IdleResult {
             _ => "0".to_owned(),
         };
         let display = format!(":{}", device.chars().rev().next().unwrap_or('0'));
-        let output = Command::new("xssstate")
-            .env("DISPLAY", display)
-            .arg("-i")
+        let mut output = Command::new("w")
+            .arg("-hus")
+            .stdout(Stdio::piped()).spawn()?;
+        let _ = output.wait()?;
+        let w_stdout = output.stdout
+            .ok_or(CircadianError("w command has no output".into()))?;
+        let awk_arg = format!("{{if ($3 ~ /^{}/) print $1}}", display);
+        let output = Command::new("awk")
+            .arg(awk_arg)
+            .stdin(w_stdout)
             .output()?;
-        let mut idle_str = String::from_utf8(output.stdout)
+        let user_str = String::from_utf8(output.stdout)
             .unwrap_or(String::new());
-        idle_str.pop();
-        display_mins.push(idle_str.parse::<u32>().unwrap_or(std::u32::MAX)/1000);
-    }
-    match display_mins.len() {
-        0 => Err(CircadianError("No displays found.".to_string())),
-        _ => Ok(display_mins.iter().fold(std::u32::MAX, |acc, x| std::cmp::min(acc,*x)))
-    }
-}
-
-/// Call 'xprintidle' command and return idle time
-fn idle_xprintidle() -> IdleResult {
-    let mut display_mins: Vec<u32> = Vec::<u32>::new();
-    for device in glob("/tmp/.X11-unix/X*")? {
-        let device: String = match device {
-            Ok(p) => p.to_str().unwrap_or("0").to_owned(),
-            _ => "0".to_owned(),
-        };
-        let display = format!(":{}", device.chars().rev().next().unwrap_or('0'));
-        let output = Command::new("xprintidle")
+        let user = user_str.split("\n").next().unwrap_or("root");
+        let output = Command::new("id")
+            .arg("-u")
+            .arg(user)
+            .output()?;
+        let mut uid = String::from_utf8(output.stdout)
+            .unwrap_or(String::new());
+        uid.pop();
+        let uid = uid.parse::<u32>().unwrap_or(0);
+        let output = Command::new(cmd)
+            .args(&args)
+            .uid(uid)
             .env("DISPLAY", display)
             .output()?;
         let mut idle_str = String::from_utf8(output.stdout)
@@ -337,6 +346,17 @@ fn idle_xprintidle() -> IdleResult {
         _ => Ok(display_mins.iter().fold(std::u32::MAX, |acc, x| std::cmp::min(acc,*x)))
     }
 }
+
+/// Call 'xprintidle' command and return idle time
+fn idle_xprintidle() -> IdleResult {
+    idle_fn("xprintidle", vec![])
+}
+
+/// Call 'xssstate' command and return idle time
+fn idle_xssstate() -> IdleResult {
+    idle_fn("xssstate", vec!["-i"])
+}
+
 
 /// Compare whether 'uptime' 5-min CPU usage compares
 /// to the given thresh with the given cmp function.
@@ -554,6 +574,7 @@ fn test_idle(config: &CircadianConfig) -> IdleResponse {
         x11_idle: x11_idle,
         x11_enabled: config.x11_input,
         min_idle: min_idle,
+        idle_target: config.idle_time,
         idle_remain: idle_remain,
         is_idle: idle_remain == 0,
     }
