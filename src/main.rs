@@ -689,20 +689,30 @@ fn main() {
     });
     println!("Configuration valid.  Idle detection starting.");
 
+    let mut idle_triggered = false;
     let mut start = time::now_utc().to_timespec().sec as i64;
     loop {
         let idle = test_idle(&config);
-        if idle.is_idle {
+        if idle.is_idle && ! idle_triggered {
             let tests = test_nonidle(&config);
             if !tests.is_blocked {
-                println!("Idle Detection Summary:\n{}{}", idle, tests);
-                println!("IDLE DETECTED.");
-                // TODO: on_idle()
-                //let status = Command::new("systemctl")
-                //    .arg("suspend")
-                //    .status().unwrap();
-                //println!("Suspend status: {}", status);
+                println!("Idle state active:\n{}{}", idle, tests);
+                if let Some(ref idle_cmd) = config.on_idle {
+                    println!("System suspending.");
+                    let status = Command::new("sh")
+                        .arg("-c")
+                        .arg(idle_cmd)
+                        .status();
+                    match status {
+                        Ok(_) => { println!("Idle command succeeded."); },
+                        Err(e) => { println!("Idle command failed: {}", e); },
+                    }
+                }
+                idle_triggered = true;
             }
+        }
+        else {
+            idle_triggered = false;
         }
 
         let sleep_time = std::cmp::max(idle.idle_remain, 5000);
@@ -720,15 +730,26 @@ fn main() {
             }
 
             let now = time::now_utc().to_timespec().sec as i64;
-            // Look for clock jumps, that indicate the system slept
-            if start + 120 < now {
+            // Look for clock jumps that indicate the system slept
+            if start + 30 < now {
                 println!("Watchdog missed.  Wake from sleep!");
                 let idle = test_idle(&config);
                 let tests = test_nonidle(&config);
-                println!("Idle Detection Summary:\n{}{}", idle, tests);
+                println!("Idle state on wake:\n{}{}", idle, tests);
+                if let Some(ref wake_cmd) = config.on_wake {
+                    println!("System waking.");
+                    let status = Command::new("sh")
+                        .arg("-c")
+                        .arg(wake_cmd)
+                        .status();
+                    match status {
+                        Ok(_) => { println!("Wake command succeeded."); },
+                        Err(e) => { println!("Wake command failed: {}", e); },
+                    }
+                }
             }
-            // Kick watchdog timer once per minute
-            if start + 60 < now {
+            // Kick watchdog timer frequently
+            if start + 10 < now {
                 start = time::now_utc().to_timespec().sec as i64;
             }
             std::thread::sleep(std::time::Duration::from_millis(sleep_chunk));
