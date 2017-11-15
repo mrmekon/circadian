@@ -27,6 +27,13 @@ assets = [
        ["resources/circadian.service", "etc/systemd/system/", "644"],
 ]
 
+[package.metadata.release]
+sign-commit = false
+upload-doc = false
+pre-release-commit-message = "Release {{version}}"
+dev-version-ext = "rc"
+tag-message = "Release {{version}}"
+doc-commit-message = "Release {{version}}"
 
 [profile.release]
 lto = true
