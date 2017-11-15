@@ -1,0 +1,11 @@
+[Unit]
+Description=Circadian power management service
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/circadian
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

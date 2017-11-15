@@ -10,6 +10,24 @@ repository = "https://github.com/mrmekon/circadian"
 documentation = "https://github.com/mrmekon/circadian"
 license = "GPL-3.0"
 
+[package.metadata.deb]
+maintainer = "Trevor Bentley <trevor@trevorbentley.com>"
+copyright = "Copyright 2017 Trevor Bentley"
+license-file = ["LICENSE"]
+extended-description = """\
+Circadian is a power management daemon for automatically suspending machines \
+when they are idle, and optionally waking them back up at set times."""
+depends = "$auto, systemd"
+revision = "1"
+section = "admin"
+priority = "optional"
+assets = [
+       ["target/release/circadian", "usr/bin/", "755"],
+       ["resources/circadian.conf.in", "etc/circadian.conf", "644"],
+       ["resources/circadian.service", "etc/systemd/system/", "644"],
+]
+
+
 [profile.release]
 lto = true
 
