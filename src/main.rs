@@ -31,11 +31,18 @@ extern crate clap;
 extern crate ini;
 use ini::Ini;
 
+extern crate nix;
+use nix::sys::signal;
+
+extern crate time;
+
 use std::error::Error;
 use std::process::Stdio;
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, ATOMIC_BOOL_INIT, Ordering};
 
 pub struct CircadianError(String);
+
 impl std::fmt::Display for CircadianError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "{}", self.0)
@@ -53,6 +60,11 @@ impl std::error::Error for CircadianError {
 
     fn cause(&self) -> Option<&std::error::Error> {
         None
+    }
+}
+impl <'a> From<&'a str> for CircadianError {
+    fn from(error: &str) -> Self {
+        CircadianError(error.to_owned())
     }
 }
 impl From<std::io::Error> for CircadianError {
@@ -85,6 +97,11 @@ impl From<ini::ini::Error> for CircadianError {
         CircadianError(error.description().to_owned())
     }
 }
+impl From<nix::Error> for CircadianError {
+    fn from(error: nix::Error) -> Self {
+        CircadianError(error.description().to_owned())
+    }
+}
 
 type IdleResult = Result<u32, CircadianError>;
 type ThreshResult = Result<bool, CircadianError>;
@@ -101,6 +118,118 @@ enum CpuHistory {
     Min1,
     Min5,
     Min15
+}
+
+#[derive(Debug)]
+struct IdleResponse {
+    w_idle: IdleResult,
+    w_enabled: bool,
+    xssstate_idle: IdleResult,
+    xssstate_enabled: bool,
+    xprintidle_idle: IdleResult,
+    xprintidle_enabled: bool,
+    tty_idle: u32,
+    tty_enabled: bool,
+    x11_idle: u32,
+    x11_enabled: bool,
+    min_idle: u32,
+    idle_remain: u64,
+    is_idle: bool,
+}
+impl std::fmt::Display for IdleResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let result_map = vec![
+            (self.w_idle.as_ref(), self.w_enabled, "w"),
+            (self.xssstate_idle.as_ref(), self.xssstate_enabled, "xssstate"),
+            (self.xprintidle_idle.as_ref(), self.xprintidle_enabled, "xprintidle"),
+        ];
+        for (var,enabled,name) in result_map {
+            let s = match var {
+                Ok(x)  => x.to_string(),
+                Err(e) => e.to_string(),
+            };
+            let enabled = match enabled {
+                true => "*",
+                _ => "",
+            };
+            let name = format!("{}{}", name, enabled);
+            let _ = write!(f, "{:<16}: {}\n", name, s);
+        }
+        let int_map = vec![
+            (self.tty_idle, self.tty_enabled, "TTY (combined)"),
+            (self.x11_idle, self.x11_enabled, "X11 (combined)"),
+        ];
+        for (var,enabled,name) in int_map {
+            let enabled = match enabled {
+                true => "*",
+                _ => "",
+            };
+            let name = format!("{}{}", name, enabled);
+            let _ = write!(f, "{:<16}: {}\n", name, var);
+        }
+        let _ = write!(f, "{:<16}: {}\n", "Idle (min)", self.min_idle);
+        let _ = write!(f, "{:<16}: {}\n", "Until idle", self.idle_remain);
+        let _ = write!(f, "{:<16}: {}\n", "IDLE?", self.is_idle);
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct NonIdleResponse {
+    cpu_load: ThreshResult,
+    cpu_load_enabled: bool,
+    ssh: ExistResult,
+    ssh_enabled: bool,
+    smb: ExistResult,
+    smb_enabled: bool,
+    audio: ExistResult,
+    audio_enabled: bool,
+    procs: ExistResult,
+    procs_enabled: bool,
+    is_blocked: bool,
+}
+impl std::fmt::Display for NonIdleResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let result_map = vec![
+            (self.cpu_load.as_ref(), self.cpu_load_enabled, "CPU load"),
+            (self.ssh.as_ref(), self.ssh_enabled, "SSH"),
+            (self.smb.as_ref(), self.smb_enabled, "SMB"),
+            (self.audio.as_ref(), self.audio_enabled, "Audio"),
+            (self.procs.as_ref(), self.procs_enabled, "Processes"),
+        ];
+        for (var,enabled,name) in result_map {
+            let s = match var {
+                Ok(x)  => x.to_string(),
+                Err(e) => e.to_string(),
+            };
+            let enabled = match enabled {
+                true => "*",
+                _ => "",
+            };
+            let name = format!("{}{}", name, enabled);
+            let _ = write!(f, "{:<16}: {}\n", name, s);
+        }
+        let _ = write!(f, "{:<16}: {}\n", "BLOCKED?", self.is_blocked);
+        Ok(())
+    }
+}
+
+static SIGUSR_SIGNALED: AtomicBool = ATOMIC_BOOL_INIT;
+
+/// Set global flag when SIGUSR1 signal is received
+extern fn sigusr1_handler(_: i32) {
+    SIGUSR_SIGNALED.store(true, Ordering::Relaxed);
+}
+
+/// Register SIGUSR1 signal handler
+fn register_sigusr1() -> Result<signal::SigAction, CircadianError> {
+    let sig_handler = signal::SigHandler::Handler(sigusr1_handler);
+    let sig_action = signal::SigAction::new(sig_handler,
+                                            signal::SaFlags::empty(),
+                                            signal::SigSet::empty());
+    unsafe {
+        Ok(signal::sigaction(signal::SIGUSR1, &sig_action)?)
+    }
 }
 
 /// Parse idle time strings from 'w' command into seconds
@@ -141,11 +270,13 @@ fn parse_w_time(time_str: &str) -> Result<u32, CircadianError> {
 
 /// Call 'w' command and return minimum idle time
 fn idle_w() -> IdleResult {
-    let w_output = Command::new("w")
+    let w_stdout = Stdio::piped();
+    let mut w_output = Command::new("w")
         .arg("-hus")
-        .stdout(Stdio::piped()).spawn()?;
+        .stdout(w_stdout).spawn()?;
+    let _ = w_output.wait()?;
     let w_stdout = w_output.stdout
-        .ok_or(CircadianError("w command has no output".to_string()))?;
+        .ok_or(CircadianError("w command has no output".into()))?;
     let awk_output = Command::new("awk")
         .arg("{print $4}")
         .stdin(w_stdout)
@@ -162,25 +293,49 @@ fn idle_w() -> IdleResult {
 
 /// Call 'xssstate' command and return idle time
 fn idle_xssstate() -> IdleResult {
-    let output = Command::new("xssstate")
-        .env("DISPLAY", ":0.0")
-        .arg("-i")
-        .output()?;
-    let mut idle_str = String::from_utf8(output.stdout)
-        .unwrap_or(String::new());
-    idle_str.pop();
-    Ok(idle_str.parse::<u32>().unwrap_or(0)/1000)
+    let mut display_mins: Vec<u32> = Vec::<u32>::new();
+    for device in glob("/tmp/.X11-unix/X*")? {
+        let device: String = match device {
+            Ok(p) => p.to_str().unwrap_or("0").to_owned(),
+            _ => "0".to_owned(),
+        };
+        let display = format!(":{}", device.chars().rev().next().unwrap_or('0'));
+        let output = Command::new("xssstate")
+            .env("DISPLAY", display)
+            .arg("-i")
+            .output()?;
+        let mut idle_str = String::from_utf8(output.stdout)
+            .unwrap_or(String::new());
+        idle_str.pop();
+        display_mins.push(idle_str.parse::<u32>().unwrap_or(std::u32::MAX)/1000);
+    }
+    match display_mins.len() {
+        0 => Err(CircadianError("No displays found.".to_string())),
+        _ => Ok(display_mins.iter().fold(std::u32::MAX, |acc, x| std::cmp::min(acc,*x)))
+    }
 }
 
 /// Call 'xprintidle' command and return idle time
 fn idle_xprintidle() -> IdleResult {
-    let output = Command::new("xprintidle")
-        .env("DISPLAY", ":0.0")
-        .output()?;
-    let mut idle_str = String::from_utf8(output.stdout)
-        .unwrap_or(String::new());
-    idle_str.pop();
-    Ok(idle_str.parse::<u32>().unwrap_or(0)/1000)
+    let mut display_mins: Vec<u32> = Vec::<u32>::new();
+    for device in glob("/tmp/.X11-unix/X*")? {
+        let device: String = match device {
+            Ok(p) => p.to_str().unwrap_or("0").to_owned(),
+            _ => "0".to_owned(),
+        };
+        let display = format!(":{}", device.chars().rev().next().unwrap_or('0'));
+        let output = Command::new("xprintidle")
+            .env("DISPLAY", display)
+            .output()?;
+        let mut idle_str = String::from_utf8(output.stdout)
+            .unwrap_or(String::new());
+        idle_str.pop();
+        display_mins.push(idle_str.parse::<u32>().unwrap_or(std::u32::MAX)/1000)
+    }
+    match display_mins.len() {
+        0 => Err(CircadianError("No displays found.".to_string())),
+        _ => Ok(display_mins.iter().fold(std::u32::MAX, |acc, x| std::cmp::min(acc,*x)))
+    }
 }
 
 /// Compare whether 'uptime' 5-min CPU usage compares
@@ -201,7 +356,7 @@ fn thresh_cpu<C>(history: CpuHistory, thresh: f64, cmp: C) -> ThreshResult
         .rev()
         .map(|x| *x)
         .filter(|x| x.len() > 0)
-        .map(|x| str::parse::<f64>(&x[0..x.len()-1]).unwrap_or(std::f64::MAX))
+        .map(|x| str::parse::<f64>(&x[0..x.len()-1].replace(",",".")).unwrap_or(0.0))
         .collect::<Vec<f64>>();
     let idle: Vec<bool> = cpu_usages.iter()
         .map(|x| cmp(x, &thresh))
@@ -212,7 +367,8 @@ fn thresh_cpu<C>(history: CpuHistory, thresh: f64, cmp: C) -> ThreshResult
         CpuHistory::Min5 => 1,
         CpuHistory::Min15 => 2,
     };
-    Ok(*idle.get(idx).unwrap_or(&false))
+    // false == below threshold, true == above
+    Ok(!*idle.get(idx).unwrap_or(&false))
 }
 
 /// Determine whether a process (by name regex) is running.
@@ -229,16 +385,18 @@ fn exist_process(prc: &str) -> ExistResult {
 
 /// Determine whether the given type of network connection is established.
 fn exist_net_connection(conn: NetConnection) -> ExistResult {
-    let output = Command::new("netstat")
+    let mut output = Command::new("netstat")
         .arg("-tnpa")
         .stderr(Stdio::null())
         .stdout(Stdio::piped()).spawn()?;
+    let _ = output.wait()?;
     let stdout = output.stdout
         .ok_or(CircadianError("netstat command has no output".to_string()))?;
-    let output = Command::new("grep")
+    let mut output = Command::new("grep")
         .arg("ESTABLISHED")
         .stdin(stdout)
         .stdout(Stdio::piped()).spawn()?;
+    let _ = output.wait()?;
     let stdout = output.stdout
         .ok_or(CircadianError("netstat command has no connections".to_string()))?;
     let pattern = match conn {
@@ -264,11 +422,12 @@ fn exist_audio() -> ExistResult {
     let mut count = 0;
     for device in glob("/proc/asound/card*/pcm*/sub*/status")? {
         if let Ok(path) = device {
-            let output = Command::new("cat")
+            let mut cat_output = Command::new("cat")
                 .arg(path)
                 .stderr(Stdio::null())
                 .stdout(Stdio::piped()).spawn()?;
-            let stdout = output.stdout
+            let _ = cat_output.wait()?;
+            let stdout = cat_output.stdout
                 .ok_or(CircadianError("pacmd failed".to_string()))?;
             let output = Command::new("grep")
                 .arg("state:")
@@ -369,6 +528,77 @@ fn read_cmdline() -> CircadianLaunchOptions {
     }
 }
 
+fn test_idle(config: &CircadianConfig) -> IdleResponse {
+    let tty = idle_w();
+    let xssstate = idle_xssstate();
+    let xprintidle = idle_xprintidle();
+    let tty_idle = *tty.as_ref().unwrap_or(&std::u32::MAX);
+    let x11_idle = std::cmp::min(*xssstate.as_ref().unwrap_or(&std::u32::MAX),
+                                 *xprintidle.as_ref().unwrap_or(&std::u32::MAX));
+    let min_idle: u32 = match (config.tty_input, config.x11_input) {
+        (true,true) => std::cmp::min(tty_idle, x11_idle) as u32,
+        (true,false) => tty_idle as u32,
+        (false,_) => x11_idle as u32,
+    };
+    let idle_remain: u64 =
+        std::cmp::max(config.idle_time as i64 - min_idle as i64, 0) as u64;
+    IdleResponse {
+        w_idle: tty,
+        w_enabled: config.tty_input,
+        xssstate_idle: xssstate,
+        xssstate_enabled: config.x11_input,
+        xprintidle_idle: xprintidle,
+        xprintidle_enabled: config.x11_input,
+        tty_idle: tty_idle,
+        tty_enabled: config.tty_input,
+        x11_idle: x11_idle,
+        x11_enabled: config.x11_input,
+        min_idle: min_idle,
+        idle_remain: idle_remain,
+        is_idle: idle_remain == 0,
+    }
+}
+fn test_nonidle(config: &CircadianConfig) -> NonIdleResponse {
+    let cpu_load = thresh_cpu(CpuHistory::Min1,
+                              config.max_cpu_load.unwrap_or(999.0),
+                              std::cmp::PartialOrd::lt);
+    let cpu_load_enabled = config.max_cpu_load.is_some() &&
+        config.max_cpu_load.unwrap() < 999.0;
+    let ssh = exist_net_connection(NetConnection::SSH);
+    let ssh_enabled = config.ssh_block;
+    let smb = exist_net_connection(NetConnection::SMB);
+    let smb_enabled = config.smb_block;
+    let audio = exist_audio();
+    let audio_enabled = config.audio_block;
+    let procs = config.process_block.iter()
+    // Run 'exist_process' on each process string
+        .map(|p| exist_process(p))
+    // Flatten into a single result with a Vec of bools
+        .collect::<Result<Vec<bool>, CircadianError>>()
+    // Flatten Vec of bools into a single bool
+        .map(|x| x.iter().fold(false, |acc,p| acc || *p));
+    let procs_enabled = config.process_block.len() > 0;
+
+    let blocked = (cpu_load_enabled && *cpu_load.as_ref().unwrap_or(&true)) ||
+        (ssh_enabled && *ssh.as_ref().unwrap_or(&true)) ||
+        (smb_enabled && *smb.as_ref().unwrap_or(&true)) ||
+        (audio_enabled && *audio.as_ref().unwrap_or(&true)) ||
+        (procs_enabled && *procs.as_ref().unwrap_or(&true));
+    NonIdleResponse {
+        cpu_load: cpu_load,
+        cpu_load_enabled: cpu_load_enabled,
+        ssh: ssh,
+        ssh_enabled: ssh_enabled,
+        smb: smb,
+        smb_enabled: smb_enabled,
+        audio: audio,
+        audio_enabled: audio_enabled,
+        procs: procs,
+        procs_enabled: procs_enabled,
+        is_blocked: blocked,
+    }
+}
+
 #[allow(dead_code)]
 fn test() {
     println!("Sec: {:?}", parse_w_time("10.45s"));
@@ -431,39 +661,56 @@ fn main() {
         std::process::exit(1);
     }
 
+    let _ = register_sigusr1().unwrap_or_else(|x| {
+        println!("{}", x);
+        println!("WARNING: Could not register SIGUSR1 handler.");
+        std::process::exit(1);
+    });
     println!("Configuration valid.  Idle detection starting.");
+
+    let mut start = time::now_utc().to_timespec().sec as i64;
     loop {
-        let tty_idle = idle_w().unwrap_or(0);
-        let x11_idle = std::cmp::min(idle_xssstate().unwrap_or(0),
-                                     idle_xprintidle().unwrap_or(0));
-        let min_idle: u64 = match (config.tty_input, config.x11_input) {
-            (true,true) => std::cmp::min(tty_idle, x11_idle) as u64,
-            (true,false) => tty_idle as u64,
-            (false,_) => x11_idle as u64,
-        };
-        let idle_remain: u64 =
-            std::cmp::max(config.idle_time as i64 - min_idle as i64, 0) as u64;
-        if idle_remain == 0 {
-            let pass_cpu = thresh_cpu(CpuHistory::Min1,
-                                      config.max_cpu_load.unwrap_or(999.0),
-                                      std::cmp::PartialOrd::lt).unwrap_or(false);
-            let pass_ssh = !exist_net_connection(NetConnection::SSH).unwrap_or(false);
-            let pass_smb = !exist_net_connection(NetConnection::SMB).unwrap_or(false);
-            let pass_audio = !exist_audio().unwrap_or(false);
-            let pass_proc = !config.process_block.iter()
-                .map(|p| exist_process(p).unwrap_or(false))
-                .fold(false, |acc,p| acc || p);
-            println!("cpu: {}, ssh {}, smb: {}, audio: {}, proc: {}",
-                     pass_cpu, pass_ssh, pass_smb, pass_audio, pass_proc);
-            if (config.max_cpu_load.is_none() || pass_cpu) &&
-                (!config.ssh_block || pass_ssh) &&
-                (!config.smb_block || pass_smb) &&
-                (!config.audio_block || pass_audio) {
-                    println!("IDLE DETECTED.");
-                    // TODO: on_idle()
+        let idle = test_idle(&config);
+        if idle.is_idle {
+            let tests = test_nonidle(&config);
+            if !tests.is_blocked {
+                println!("Idle Detection Summary:\n{}{}", idle, tests);
+                println!("IDLE DETECTED.");
+                // TODO: on_idle()
+                //let status = Command::new("systemctl")
+                //    .arg("suspend")
+                //    .status().unwrap();
+                //println!("Suspend status: {}", status);
             }
         }
-        let sleep_time = std::cmp::max(idle_remain, 5000);
-        std::thread::sleep(std::time::Duration::from_millis(sleep_time));
+
+        let sleep_time = std::cmp::max(idle.idle_remain, 5000);
+        let sleep_chunk = 500;
+        // Sleep for the minimum time needed before the system can possibly
+        // be idle, but do it in small chunks so we can periodically check
+        // for signals and clock jumps.
+        for _ in 0 .. sleep_time / sleep_chunk {
+            // Print stats when SIGUSR1 signal received
+            let signaled = SIGUSR_SIGNALED.swap(false, Ordering::Relaxed);
+            if signaled {
+                let idle = test_idle(&config);
+                let tests = test_nonidle(&config);
+                println!("Idle Detection Summary:\n{}{}", idle, tests);
+            }
+
+            let now = time::now_utc().to_timespec().sec as i64;
+            // Look for clock jumps, that indicate the system slept
+            if start + 120 < now {
+                println!("Watchdog missed.  Wake from sleep!");
+                let idle = test_idle(&config);
+                let tests = test_nonidle(&config);
+                println!("Idle Detection Summary:\n{}{}", idle, tests);
+            }
+            // Kick watchdog timer once per minute
+            if start + 60 < now {
+                start = time::now_utc().to_timespec().sec as i64;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(sleep_chunk));
+        }
     }
 }
