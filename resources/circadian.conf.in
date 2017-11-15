@@ -109,7 +109,7 @@ idle_time = 120m
 #      /org/freedesktop/UPower org.freedesktop.UPower.Suspend
 #
 # Default: pm-suspend
-on_idle = ""
+on_idle = "systemctl suspend"
 
 # Time of day (in local timezone) to automatically wake the machine if it
 # is sleeping.  Specify in 24-hour time format with a colon.  Leave blank
