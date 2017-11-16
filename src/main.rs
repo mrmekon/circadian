@@ -128,6 +128,12 @@ enum CpuHistory {
     Min15
 }
 
+#[derive(Clone)]
+struct AutoWakeEpoch {
+    epoch: i64,
+    is_utc: bool,
+}
+
 #[derive(Debug)]
 struct IdleResponse {
     w_idle: IdleResult,
@@ -644,7 +650,8 @@ fn is_rtc_utc() -> Result<bool, CircadianError> {
         _ => Err("RTC clock does not match OS clock. Auto-wake disabled.".into()),
     }
 }
-fn auto_wake_to_epoch(auto_wake: &str) -> Result<i64, CircadianError> {
+
+fn auto_wake_to_epoch(auto_wake: &str) -> Result<AutoWakeEpoch, CircadianError> {
     let is_utc = is_rtc_utc()?;
     let auto_wake_tm = time::strptime(auto_wake, "%H:%M")?;
     let now_local = time::now();
@@ -658,8 +665,14 @@ fn auto_wake_to_epoch(auto_wake: &str) -> Result<i64, CircadianError> {
     };
     let target_time_utc = target_time_local.to_utc();
     match is_utc {
-        true => Ok(target_time_utc.to_timespec().sec),
-        false => Ok(target_time_local.to_timespec().sec),
+        true => Ok(AutoWakeEpoch {
+            epoch: target_time_utc.to_timespec().sec,
+            is_utc: true
+        }),
+        false => Ok(AutoWakeEpoch {
+            epoch: target_time_local.to_timespec().sec,
+            is_utc: false
+        }),
     }
 }
 fn set_rtc_wakealarm(timestamp: i64) -> Result<(), CircadianError> {
@@ -680,15 +693,34 @@ fn set_rtc_wakealarm(timestamp: i64) -> Result<(), CircadianError> {
     Ok(())
 }
 
-fn set_auto_wake(auto_wake: Option<&String>) -> Result<bool, CircadianError> {
+fn set_auto_wake(auto_wake: Option<&String>) -> Result<AutoWakeEpoch, CircadianError> {
     if auto_wake.is_none() {
-        return Ok(false);
+        return Err("Auto-wake not enabled.".into());
     }
     let time = auto_wake.unwrap();
     let epoch = auto_wake_to_epoch(time)?;
-    let _ = set_rtc_wakealarm(epoch)?;
-    println!("Auto-wake scheduled for {} ({})", time, epoch);
-    Ok(true)
+    let _ = set_rtc_wakealarm(epoch.epoch)?;
+    println!("Auto-wake scheduled for {} ({})", time, epoch.epoch);
+    Ok(epoch)
+}
+
+fn reschedule_auto_wake(auto_wake: Option<&String>, current_epoch: Option<AutoWakeEpoch>) -> Option<AutoWakeEpoch> {
+    let mut new_rtc: Option<AutoWakeEpoch> = current_epoch.clone();
+    if auto_wake.is_none() || current_epoch.is_none() {
+        return None;
+    }
+    let epoch = current_epoch.unwrap();
+    let now = match epoch.is_utc {
+        true => time::now_utc().to_timespec().sec as i64,
+        false => time::now().to_timespec().sec as i64,
+    };
+    if now >= epoch.epoch {
+        new_rtc = match set_auto_wake(auto_wake) {
+            Ok(epoch) => Some(epoch),
+            Err(e) => {println!("Error recheduling auto-wake timer: {}.  Disabled.", e); None},
+        };
+    }
+    new_rtc
 }
 
 #[allow(dead_code)]
@@ -753,9 +785,10 @@ fn main() {
         println!("Idle time disabled.  Nothing to do.  Exiting.");
         std::process::exit(1);
     }
-    if let Err(e) = set_auto_wake(config.auto_wake.as_ref()) {
-        println!("Error setting auto-wake timer: {}", e);
-    }
+    let mut current_rtc: Option<AutoWakeEpoch> = match set_auto_wake(config.auto_wake.as_ref()) {
+        Ok(epoch) => Some(epoch),
+        Err(e) => {println!("Error setting auto-wake timer: {}", e); None},
+    };
     let _ = register_sigusr1().unwrap_or_else(|x| {
         println!("{}", x);
         println!("WARNING: Could not register SIGUSR1 handler.");
@@ -810,9 +843,6 @@ fn main() {
                 let idle = test_idle(&config);
                 let tests = test_nonidle(&config);
                 println!("Idle state on wake:\n{}{}", idle, tests);
-                if let Err(e) = set_auto_wake(config.auto_wake.as_ref()) {
-                    println!("Error re-setting auto-wake timer: {}", e);
-                }
                 if let Some(ref wake_cmd) = config.on_wake {
                     println!("System waking.");
                     let status = Command::new("sh")
@@ -825,8 +855,9 @@ fn main() {
                     }
                 }
             }
-            // Kick watchdog timer frequently
+            // Kick watchdog timer frequently, and possibly reschedule auto-wake timer
             if start + 10 < now {
+                current_rtc = reschedule_auto_wake(config.auto_wake.as_ref(), current_rtc);
                 start = time::now_utc().to_timespec().sec as i64;
             }
             std::thread::sleep(std::time::Duration::from_millis(sleep_chunk));
