@@ -680,6 +680,17 @@ fn set_rtc_wakealarm(timestamp: i64) -> Result<(), CircadianError> {
     Ok(())
 }
 
+fn set_auto_wake(auto_wake: Option<&String>) -> Result<bool, CircadianError> {
+    if auto_wake.is_none() {
+        return Ok(false);
+    }
+    let time = auto_wake.unwrap();
+    let epoch = auto_wake_to_epoch(time)?;
+    let _ = set_rtc_wakealarm(epoch)?;
+    println!("Auto-wake scheduled for {} ({})", time, epoch);
+    Ok(true)
+}
+
 #[allow(dead_code)]
 fn test() {
     println!("Sec: {:?}", parse_w_time("10.45s"));
@@ -742,16 +753,9 @@ fn main() {
         println!("Idle time disabled.  Nothing to do.  Exiting.");
         std::process::exit(1);
     }
-
-    if let Some(time) = config.auto_wake.as_ref() {
-        if let Ok(epoch) = auto_wake_to_epoch(time) {
-            match set_rtc_wakealarm(epoch) {
-                Ok(_) => {println!("Auto-wake scheduled for {} ({})", time, epoch);},
-                Err(e) => {println!("Could not set auto-wake timer: {}", e);},
-            }
-        }
+    if let Err(e) = set_auto_wake(config.auto_wake.as_ref()) {
+        println!("Error setting auto-wake timer: {}", e);
     }
-
     let _ = register_sigusr1().unwrap_or_else(|x| {
         println!("{}", x);
         println!("WARNING: Could not register SIGUSR1 handler.");
@@ -806,6 +810,9 @@ fn main() {
                 let idle = test_idle(&config);
                 let tests = test_nonidle(&config);
                 println!("Idle state on wake:\n{}{}", idle, tests);
+                if let Err(e) = set_auto_wake(config.auto_wake.as_ref()) {
+                    println!("Error re-setting auto-wake timer: {}", e);
+                }
                 if let Some(ref wake_cmd) = config.on_wake {
                     println!("System waking.");
                     let status = Command::new("sh")
