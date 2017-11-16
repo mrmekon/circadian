@@ -55,7 +55,7 @@ $ cd circadian
 $ cargo build --release
 $ sudo cp target/release/circadian /usr/bin/
 $ sudo cp resources/circadian.conf.in /etc/circadian.conf
-$ sudo cp resources/circadian.service /etc/systemd/system/
+$ sudo cp resources/circadian.service /usr/lib/systemd/system/
 $ sudo systemctl enable circadian
 $ sudo systemctl start circadian
 ```

@@ -24,7 +24,7 @@ priority = "optional"
 assets = [
        ["target/release/circadian", "usr/bin/", "755"],
        ["resources/circadian.conf.in", "etc/circadian.conf", "644"],
-       ["resources/circadian.service", "etc/systemd/system/", "644"],
+       ["resources/circadian.service", "usr/lib/systemd/system/", "644"],
 ]
 
 [package.metadata.release]
