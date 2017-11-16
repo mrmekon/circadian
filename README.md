@@ -53,7 +53,7 @@ Install manually.  It's easy.
 $ git clone https://github.com/mrmekon/circadian.git
 $ cd circadian
 $ cargo build --release
-$ sudo cp target/release/circadian /usr/bin/
+$ sudo cp target/release/circadian /usr/local/bin/
 $ sudo cp resources/circadian.conf.in /etc/circadian.conf
 $ sudo cp resources/circadian.service /usr/lib/systemd/system/
 $ sudo systemctl enable circadian
