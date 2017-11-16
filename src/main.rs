@@ -36,6 +36,7 @@ use nix::sys::signal;
 
 extern crate time;
 
+use std::io::Write;
 use std::error::Error;
 use std::process::Stdio;
 use std::process::Command;
@@ -101,6 +102,11 @@ impl From<ini::ini::Error> for CircadianError {
 }
 impl From<nix::Error> for CircadianError {
     fn from(error: nix::Error) -> Self {
+        CircadianError(error.description().to_owned())
+    }
+}
+impl From<time::ParseError> for CircadianError {
+    fn from(error: time::ParseError) -> Self {
         CircadianError(error.description().to_owned())
     }
 }
@@ -620,6 +626,60 @@ fn test_nonidle(config: &CircadianConfig) -> NonIdleResponse {
     }
 }
 
+fn is_rtc_utc() -> Result<bool, CircadianError> {
+    fn get_rtc_time() -> Result<String, CircadianError> {
+        let output = Command::new("cat")
+            .arg("/sys/class/rtc/rtc0/time")
+            .output()?;
+        let t = String::from_utf8(output.stdout)?;
+        Ok(t.split(":").take(2).collect::<Vec<&str>>().join(":"))
+    }
+    let utc_tm = time::now_utc();
+    let utc_time = format!("{:02}:{:02}", utc_tm.tm_hour, utc_tm.tm_min);
+    let rtc_time = get_rtc_time()?;
+    let is_utc = utc_time == rtc_time;
+    let is_synced = utc_time.split(":").nth(1) == rtc_time.split(":").nth(1);
+    match is_synced {
+        true => Ok(is_utc),
+        _ => Err("RTC clock does not match OS clock. Auto-wake disabled.".into()),
+    }
+}
+fn auto_wake_to_epoch(auto_wake: &str) -> Result<i64, CircadianError> {
+    let is_utc = is_rtc_utc()?;
+    let auto_wake_tm = time::strptime(auto_wake, "%H:%M")?;
+    let now_local = time::now();
+    let mut target_time_local = now_local.clone();
+    target_time_local.tm_hour = auto_wake_tm.tm_hour;
+    target_time_local.tm_min = auto_wake_tm.tm_min;
+    target_time_local.tm_sec = 0;
+    let target_time_local = match target_time_local < now_local {
+        true => (target_time_local + time::Duration::days(1)).to_local(),
+        false => target_time_local,
+    };
+    let target_time_utc = target_time_local.to_utc();
+    match is_utc {
+        true => Ok(target_time_utc.to_timespec().sec),
+        false => Ok(target_time_local.to_timespec().sec),
+    }
+}
+fn set_rtc_wakealarm(timestamp: i64) -> Result<(), CircadianError> {
+    {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open("/sys/class/rtc/rtc0/wakealarm")?;
+        f.write_all("0\n".as_bytes())?;
+    }
+    {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open("/sys/class/rtc/rtc0/wakealarm")?;
+        f.write_all(format!("{}\n", timestamp).as_bytes())?;
+    }
+    Ok(())
+}
+
 #[allow(dead_code)]
 fn test() {
     println!("Sec: {:?}", parse_w_time("10.45s"));
@@ -645,6 +705,7 @@ fn main() {
             std::process::exit(1);
         });
     println!("{:?}", config);
+
     if !config.tty_input && !config.x11_input {
         println!("tty_input or x11_input must be enabled.  Exiting.");
         std::process::exit(1);
@@ -680,6 +741,15 @@ fn main() {
     if config.idle_time == 0 {
         println!("Idle time disabled.  Nothing to do.  Exiting.");
         std::process::exit(1);
+    }
+
+    if let Some(time) = config.auto_wake.as_ref() {
+        if let Ok(epoch) = auto_wake_to_epoch(time) {
+            match set_rtc_wakealarm(epoch) {
+                Ok(_) => {println!("Auto-wake scheduled for {} ({})", time, epoch);},
+                Err(e) => {println!("Could not set auto-wake timer: {}", e);},
+            }
+        }
     }
 
     let _ = register_sigusr1().unwrap_or_else(|x| {
