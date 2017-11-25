@@ -88,6 +88,9 @@ process_block = ^dd$,^rsync$,^apt-get$,^dpkg$,^cp$,^mv$
 # 1 hour has gone by without mouse movement, and no SSH connections are
 # currently active.)
 #
+# This is also the minimum amount of time that Circadian must be awake before
+# it wll sleep (again).
+#
 # Suffix:
 #  <none> - seconds
 #  m - minutes
