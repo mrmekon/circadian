@@ -1,6 +1,6 @@
 [package]
 name = "circadian"
-version = "0.5.1-rc"
+version = "0.6.0"
 authors = ["Trevor Bentley <trevor@trevorbentley.com>"]
 description = "Linux auto-suspend/wake power management daemon"
 keywords = ["linux", "power", "suspend", "daemon", "service"]
