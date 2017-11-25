@@ -142,6 +142,7 @@ struct IdleResponse {
     xssstate_enabled: bool,
     xprintidle_idle: IdleResult,
     xprintidle_enabled: bool,
+    wake_remain: u32,
     tty_idle: u32,
     tty_enabled: bool,
     x11_idle: u32,
@@ -170,6 +171,7 @@ impl std::fmt::Display for IdleResponse {
             let name = format!("{}{}", name, enabled);
             let _ = write!(f, "{:<16}: {}\n", name, s);
         }
+        let _ = write!(f, "{:<16}: {}\n", "Wake block", self.wake_remain);
         let int_map = vec![
             (self.tty_idle, self.tty_enabled, "TTY (combined)"),
             (self.x11_idle, self.x11_enabled, "X11 (combined)"),
@@ -246,6 +248,16 @@ fn register_sigusr1() -> Result<signal::SigAction, CircadianError> {
     unsafe {
         Ok(signal::sigaction(signal::SIGUSR1, &sig_action)?)
     }
+}
+
+fn command_exists(cmd: &str) -> bool {
+    match Command::new(cmd)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status() {
+            Ok(_) => true,
+            Err(_) => false,
+        }
 }
 
 /// Parse idle time strings from 'w' command into seconds
@@ -560,20 +572,22 @@ fn read_cmdline() -> CircadianLaunchOptions {
     }
 }
 
-fn test_idle(config: &CircadianConfig) -> IdleResponse {
+fn test_idle(config: &CircadianConfig, start: i64) -> IdleResponse {
+    let now = time::now_utc().to_timespec().sec as i64;
     let tty = idle_w();
     let xssstate = idle_xssstate();
     let xprintidle = idle_xprintidle();
     let tty_idle = *tty.as_ref().unwrap_or(&std::u32::MAX);
     let x11_idle = std::cmp::min(*xssstate.as_ref().unwrap_or(&std::u32::MAX),
                                  *xprintidle.as_ref().unwrap_or(&std::u32::MAX));
+    let wake_remain = std::cmp::max(0, start + (config.idle_time as i64) - now) as u32;
     let min_idle: u32 = match (config.tty_input, config.x11_input) {
         (true,true) => std::cmp::min(tty_idle, x11_idle) as u32,
         (true,false) => tty_idle as u32,
         (false,_) => x11_idle as u32,
     };
     let idle_remain: u64 =
-        std::cmp::max(config.idle_time as i64 - min_idle as i64, 0) as u64;
+            std::cmp::max(config.idle_time as i64 - min_idle as i64, 0) as u64;
     IdleResponse {
         w_idle: tty,
         w_enabled: config.tty_input,
@@ -581,6 +595,7 @@ fn test_idle(config: &CircadianConfig) -> IdleResponse {
         xssstate_enabled: config.x11_input,
         xprintidle_idle: xprintidle,
         xprintidle_enabled: config.x11_input,
+        wake_remain: wake_remain,
         tty_idle: tty_idle,
         tty_enabled: config.tty_input,
         x11_idle: x11_idle,
@@ -588,7 +603,7 @@ fn test_idle(config: &CircadianConfig) -> IdleResponse {
         min_idle: min_idle,
         idle_target: config.idle_time,
         idle_remain: idle_remain,
-        is_idle: idle_remain == 0,
+        is_idle: idle_remain == 0 && wake_remain == 0,
     }
 }
 fn test_nonidle(config: &CircadianConfig) -> NonIdleResponse {
@@ -753,13 +768,13 @@ fn main() {
         println!("tty_input or x11_input must be enabled.  Exiting.");
         std::process::exit(1);
     }
-    if config.tty_input && idle_w().is_err() {
+    if config.tty_input && !command_exists("w") {
         println!("'w' command required by tty_input failed.  Exiting.");
         std::process::exit(1);
     }
     if config.x11_input &&
-        idle_xssstate().is_err() &&
-        idle_xprintidle().is_err() {
+        !command_exists("xssstate") &&
+        !command_exists("xprintidle") {
             println!("Both 'xssstate' and 'xprintidle' commands required by x11_input failed.  Exiting.");
             std::process::exit(1);
         }
@@ -798,9 +813,12 @@ fn main() {
 
     let mut idle_triggered = false;
     let mut start = time::now_utc().to_timespec().sec as i64;
+    let mut watchdog = time::now_utc().to_timespec().sec as i64;
     loop {
-        let idle = test_idle(&config);
-        if idle.is_idle && ! idle_triggered {
+        let idle = test_idle(&config, start);
+        // If it's idle, the idle command hasn't already run, and it has been
+        // at least |idle_time| since the service started: enter idle state.
+        if idle.is_idle && !idle_triggered {
             let tests = test_nonidle(&config);
             if !tests.is_blocked {
                 println!("Idle state active:\n{}{}", idle, tests);
@@ -831,16 +849,17 @@ fn main() {
             // Print stats when SIGUSR1 signal received
             let signaled = SIGUSR_SIGNALED.swap(false, Ordering::Relaxed);
             if signaled {
-                let idle = test_idle(&config);
+                let idle = test_idle(&config, start);
                 let tests = test_nonidle(&config);
                 println!("Idle Detection Summary:\n{}{}", idle, tests);
             }
 
             let now = time::now_utc().to_timespec().sec as i64;
             // Look for clock jumps that indicate the system slept
-            if start + 30 < now {
+            if watchdog + 30 < now {
                 println!("Watchdog missed.  Wake from sleep!");
-                let idle = test_idle(&config);
+                start = time::now_utc().to_timespec().sec as i64;
+                let idle = test_idle(&config, start);
                 let tests = test_nonidle(&config);
                 println!("Idle state on wake:\n{}{}", idle, tests);
                 if let Some(ref wake_cmd) = config.on_wake {
@@ -856,9 +875,9 @@ fn main() {
                 }
             }
             // Kick watchdog timer frequently, and possibly reschedule auto-wake timer
-            if start + 10 < now {
+            if watchdog + 10 < now {
                 current_rtc = reschedule_auto_wake(config.auto_wake.as_ref(), current_rtc);
-                start = time::now_utc().to_timespec().sec as i64;
+                watchdog = time::now_utc().to_timespec().sec as i64;
             }
             std::thread::sleep(std::time::Duration::from_millis(sleep_chunk));
         }
