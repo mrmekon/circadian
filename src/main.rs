@@ -40,7 +40,7 @@ use std::io::Write;
 use std::error::Error;
 use std::process::Stdio;
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, ATOMIC_BOOL_INIT, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use std::os::unix::process::CommandExt;
 
@@ -61,7 +61,7 @@ impl std::error::Error for CircadianError {
         self.0.as_str()
     }
 
-    fn cause(&self) -> Option<&std::error::Error> {
+    fn cause(&self) -> Option<&dyn std::error::Error> {
         None
     }
 }
@@ -232,7 +232,7 @@ impl std::fmt::Display for NonIdleResponse {
     }
 }
 
-static SIGUSR_SIGNALED: AtomicBool = ATOMIC_BOOL_INIT;
+static SIGUSR_SIGNALED: AtomicBool = AtomicBool::new(false);
 
 /// Set global flag when SIGUSR1 signal is received
 extern fn sigusr1_handler(_: i32) {
