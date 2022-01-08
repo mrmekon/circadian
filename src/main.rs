@@ -296,8 +296,45 @@ fn parse_w_time(time_str: &str) -> Result<u32, CircadianError> {
     Ok((hours*60*60) + (mins*60) + secs)
 }
 
+// count number of fields in 'w' output
+//
+// This is a stupid requirement because some linux distros build w
+// with the 'FROM' field enabled by default and others with it
+// disabled.  'w' has a command-line option to *toggle* the field, but
+// no to forcibly enable/disable it.
+fn count_w_fields() -> Result<usize, CircadianError> {
+    let w_stdout = Stdio::piped();
+    let s_stdout = Stdio::piped();
+    let mut w_output = Command::new("w")
+        .arg("-us")
+        .stdout(w_stdout).spawn()?;
+    let _ = w_output.wait()?;
+    let w_stdout = w_output.stdout
+        .ok_or(CircadianError("w command has no output".into()))?;
+    // print just the second row, the header
+    let mut sed_output = Command::new("sed")
+        .arg("-n")
+        .arg("2p")
+        .stdin(w_stdout)
+        .stdout(s_stdout)
+        .spawn()?;
+    let _ = sed_output.wait()?;
+    let s_stdout = sed_output.stdout
+        .ok_or(CircadianError("w/sed command has no output".into()))?;
+    let awk_output = Command::new("awk")
+        .arg("{print NF}")
+        .stdin(s_stdout)
+        .output()?;
+    let num_fields: usize = String::from_utf8(awk_output.stdout)
+        .unwrap_or(String::new())
+        .trim()
+        .parse::<usize>()?;
+    Ok(num_fields)
+}
+
 /// Call 'w' command and return minimum idle time
 fn idle_w() -> IdleResult {
+    let num_fields = count_w_fields()?;
     let w_stdout = Stdio::piped();
     let mut w_output = Command::new("w")
         .arg("-hus")
@@ -305,8 +342,9 @@ fn idle_w() -> IdleResult {
     let _ = w_output.wait()?;
     let w_stdout = w_output.stdout
         .ok_or(CircadianError("w command has no output".into()))?;
+    // idle field is the second to last
     let awk_output = Command::new("awk")
-        .arg("{print $4}")
+        .arg(format!("{{print ${}}}", num_fields - 1))
         .stdin(w_stdout)
         .output()?;
     let idle_times: Vec<u32> = String::from_utf8(awk_output.stdout)
