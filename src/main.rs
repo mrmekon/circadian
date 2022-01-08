@@ -528,6 +528,7 @@ fn exist_audio() -> ExistResult {
 struct CircadianLaunchOptions {
     config_file: String,
     //script_dir: String,
+    test: bool,
 }
 
 #[derive(Default,Debug)]
@@ -599,6 +600,7 @@ fn read_cmdline() -> CircadianLaunchOptions {
         .about(env!("CARGO_PKG_DESCRIPTION"))
         .args_from_usage(
             "-f, --config=[FILE] ''
+             -t, --test 'Run idle tests and exit'
              -d, --script-dir=[DIR] ''")
         .get_matches();
     let config = matches.value_of("config").unwrap_or("/etc/circadian.conf");
@@ -607,6 +609,7 @@ fn read_cmdline() -> CircadianLaunchOptions {
     CircadianLaunchOptions {
         config_file: config.to_owned(),
         //script_dir: script_dir.to_owned(),
+        test: matches.is_present("test"),
     }
 }
 
@@ -801,6 +804,15 @@ fn main() {
             std::process::exit(1);
         });
     println!("{:?}", config);
+
+    if launch_opts.test {
+        println!("Got --test: running idle test and exiting.");
+        let start = time::now_utc().to_timespec().sec as i64;
+        let idle = test_idle(&config, start);
+        let tests = test_nonidle(&config);
+        println!("Idle Detection Summary:\n{}{}", idle, tests);
+        std::process::exit(0);
+    }
 
     if !config.tty_input && !config.x11_input {
         println!("tty_input or x11_input must be enabled.  Exiting.");
