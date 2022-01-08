@@ -37,7 +37,6 @@ use nix::sys::signal;
 extern crate time;
 
 use std::io::Write;
-use std::error::Error;
 use std::process::Stdio;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -72,42 +71,42 @@ impl <'a> From<&'a str> for CircadianError {
 }
 impl From<std::io::Error> for CircadianError {
     fn from(error: std::io::Error) -> Self {
-        CircadianError(error.description().to_owned())
+        CircadianError(error.to_string().to_owned())
     }
 }
 impl From<regex::Error> for CircadianError {
     fn from(error: regex::Error) -> Self {
-        CircadianError(error.description().to_owned())
+        CircadianError(error.to_string().to_owned())
     }
 }
 impl From<std::num::ParseIntError> for CircadianError {
     fn from(error: std::num::ParseIntError) -> Self {
-        CircadianError(error.description().to_owned())
+        CircadianError(error.to_string().to_owned())
     }
 }
 impl From<std::string::FromUtf8Error> for CircadianError {
     fn from(error: std::string::FromUtf8Error) -> Self {
-        CircadianError(error.description().to_owned())
+        CircadianError(error.to_string().to_owned())
     }
 }
 impl From<glob::PatternError> for CircadianError {
     fn from(error: glob::PatternError) -> Self {
-        CircadianError(error.description().to_owned())
+        CircadianError(error.to_string().to_owned())
     }
 }
 impl From<ini::ini::Error> for CircadianError {
     fn from(error: ini::ini::Error) -> Self {
-        CircadianError(error.description().to_owned())
+        CircadianError(error.to_string().to_owned())
     }
 }
 impl From<nix::Error> for CircadianError {
     fn from(error: nix::Error) -> Self {
-        CircadianError(error.description().to_owned())
+        CircadianError(error.to_string().to_owned())
     }
 }
 impl From<time::ParseError> for CircadianError {
     fn from(error: time::ParseError) -> Self {
-        CircadianError(error.description().to_owned())
+        CircadianError(error.to_string().to_owned())
     }
 }
 
