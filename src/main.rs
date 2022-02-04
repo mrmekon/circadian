@@ -117,7 +117,8 @@ type ExistResult = Result<bool, CircadianError>;
 #[allow(dead_code)]
 enum NetConnection {
     SSH,
-    SMB
+    SMB,
+    NFS,
 }
 
 #[allow(dead_code)]
@@ -199,6 +200,8 @@ struct NonIdleResponse {
     ssh_enabled: bool,
     smb: ExistResult,
     smb_enabled: bool,
+    nfs: ExistResult,
+    nfs_enabled: bool,
     audio: ExistResult,
     audio_enabled: bool,
     procs: ExistResult,
@@ -211,6 +214,7 @@ impl std::fmt::Display for NonIdleResponse {
             (self.cpu_load.as_ref(), self.cpu_load_enabled, "CPU load"),
             (self.ssh.as_ref(), self.ssh_enabled, "SSH"),
             (self.smb.as_ref(), self.smb_enabled, "SMB"),
+            (self.nfs.as_ref(), self.nfs_enabled, "NFS"),
             (self.audio.as_ref(), self.audio_enabled, "Audio"),
             (self.procs.as_ref(), self.procs_enabled, "Processes"),
         ];
@@ -483,6 +487,7 @@ fn exist_net_connection(conn: NetConnection) -> ExistResult {
     let pattern = match conn {
         NetConnection::SSH => "[0-9]+/ssh[d]*",
         NetConnection::SMB => "[0-9]+/smb[d]*",
+        NetConnection::NFS => "[0-9]+:2049\\s",
     };
     let output = Command::new("grep")
         .arg("-E")
@@ -540,6 +545,7 @@ struct CircadianConfig {
     x11_input: bool,
     ssh_block: bool,
     smb_block: bool,
+    nfs_block: bool,
     audio_block: bool,
     max_cpu_load: Option<f64>,
     process_block: Vec<String>,
@@ -579,6 +585,7 @@ fn read_config(file_path: &str) -> Result<CircadianConfig, CircadianError> {
         config.x11_input = read_bool(section, "x11_input");
         config.ssh_block = read_bool(section, "ssh_block");
         config.smb_block = read_bool(section, "smb_block");
+        config.nfs_block = read_bool(section, "nfs_block");
         config.audio_block = read_bool(section, "audio_block");
         config.max_cpu_load = section.get("max_cpu_load")
             .and_then(|x| if x.len() > 0
@@ -656,6 +663,8 @@ fn test_nonidle(config: &CircadianConfig) -> NonIdleResponse {
     let ssh_enabled = config.ssh_block;
     let smb = exist_net_connection(NetConnection::SMB);
     let smb_enabled = config.smb_block;
+    let nfs = exist_net_connection(NetConnection::NFS);
+    let nfs_enabled = config.nfs_block;
     let audio = exist_audio();
     let audio_enabled = config.audio_block;
     let procs = config.process_block.iter()
@@ -670,6 +679,7 @@ fn test_nonidle(config: &CircadianConfig) -> NonIdleResponse {
     let blocked = (cpu_load_enabled && *cpu_load.as_ref().unwrap_or(&true)) ||
         (ssh_enabled && *ssh.as_ref().unwrap_or(&true)) ||
         (smb_enabled && *smb.as_ref().unwrap_or(&true)) ||
+        (nfs_enabled && *nfs.as_ref().unwrap_or(&true)) ||
         (audio_enabled && *audio.as_ref().unwrap_or(&true)) ||
         (procs_enabled && *procs.as_ref().unwrap_or(&true));
     NonIdleResponse {
@@ -679,6 +689,8 @@ fn test_nonidle(config: &CircadianConfig) -> NonIdleResponse {
         ssh_enabled: ssh_enabled,
         smb: smb,
         smb_enabled: smb_enabled,
+        nfs: nfs,
+        nfs_enabled: nfs_enabled,
         audio: audio,
         audio_enabled: audio_enabled,
         procs: procs,
@@ -789,6 +801,7 @@ fn test() {
     println!("cpu: {:?}", thresh_cpu(CpuHistory::Min5, 0.3, std::cmp::PartialOrd::lt));
     println!("ssh: {:?}", exist_net_connection(NetConnection::SSH));
     println!("smb: {:?}", exist_net_connection(NetConnection::SMB));
+    println!("nfs: {:?}", exist_net_connection(NetConnection::NFS));
     println!("iotop: {:?}", exist_process("^iotop$"));
     println!("audio: {:?}", exist_audio());
 }
@@ -832,9 +845,9 @@ fn main() {
             println!("'uptime' command required by max_cpu_load failed.  Exiting.");
             std::process::exit(1);
         }
-    if (config.ssh_block || config.smb_block) &&
+    if (config.ssh_block || config.smb_block || config.nfs_block) &&
         exist_net_connection(NetConnection::SSH).is_err() {
-        println!("'netstat' command required by ssh/smb_block failed.  Exiting.");
+        println!("'netstat' command required by ssh/smb/nfs_block failed.  Exiting.");
         std::process::exit(1);
         }
     if config.audio_block && exist_audio().is_err() {

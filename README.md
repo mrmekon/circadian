@@ -13,6 +13,7 @@ Circadian uses a suite of 'idle heuristics' to determine when a system is idle. 
  * User activity in terminals (typing in PTY/SSH session)
  * Open SSH connections
  * Open SMB/Samba connections
+ * Open NFS connections
  * Active audio playback
  * CPU usage below specified threshold
  * Blacklisted processes

@@ -47,6 +47,15 @@ ssh_block = yes
 # Default: no
 smb_block = no
 
+# Whether active NFS connections block the system from being idle.  Both
+# inbound and outbound connections will prevent the system from going idle
+# if this is 'yes'.
+#
+# Monitors netstat
+#
+# Default: no
+nfs_block = no
+
 # Whether active audio playback blocks the system from being idle.
 #
 # Monitors /proc/asound
