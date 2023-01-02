@@ -43,7 +43,7 @@ checksum = "d4c819a1287eb618df47cc647173c5c4c66ba19d888a6e50d605672aed3140de"
 
 [[package]]
 name = "circadian"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "clap",
  "glob",
