@@ -30,7 +30,6 @@ assets = [
 [package.metadata.release]
 sign-commit = false
 pre-release-commit-message = "Release {{version}}"
-dev-version-ext = "rc"
 tag-message = "Release {{version}}"
 
 
