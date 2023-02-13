@@ -36,6 +36,9 @@ use nix::sys::signal;
 
 extern crate time;
 
+extern crate users;
+use users::{get_user_by_name};
+
 use std::io::Write;
 use std::process::Stdio;
 use std::process::Command;
@@ -531,23 +534,43 @@ fn exist_audio_alsa() -> ExistResult {
 
 /// Determine whether audio is actively playing on any Pulseaudio interface.
 fn exist_audio_pulseaudio() -> ExistResult {
-    let mut count = 0;
-    let mut cat_output = Command::new("pacmd")
-        .arg("list-sink-inputs")
+    let users_output = Command::new("users")
         .stderr(Stdio::null())
-        .stdout(Stdio::piped()).spawn()?;
-    let _ = cat_output.wait()?;
-    let stdout = cat_output.stdout
-        .ok_or(CircadianError("pacmd failed".to_string()))?;
-    let output = Command::new("grep")
-        .arg("state: RUNNING") // Does not includes CORKED == Paused audio
-        .stdin(stdout)
-        .output()?;
-    let output_str = String::from_utf8(output.stdout)?;
-    let lines: Vec<&str> = output_str.split("\n")
+        .output();
+    let users_stdout = users_output
+        .map_err(| _ | CircadianError("users failed".to_string()));
+    let users_output_str = String::from_utf8(users_stdout?.stdout)?;
+    let active_users: Vec<&str> = users_output_str.split(" ")
         .filter(|l| l.len() > 0)
         .collect();
-    count += lines.len();
+
+    let mut count = 0;
+    for active_user in active_users {
+        match get_user_by_name(&active_user.trim()) {
+            Some(x) => {
+                let active_user_id = x.uid();
+                let mut pacmd_output = Command::new("pacmd").uid(active_user_id)
+                    .env("XDG_RUNTIME_DIR", format!("/run/user/{}", active_user_id))
+                    .arg("list-sink-inputs")
+                    .stderr(Stdio::null())
+                    .stdout(Stdio::piped()).spawn()?;
+                let _ = pacmd_output.wait()?;
+                let stdout = pacmd_output.stdout
+                    .ok_or(CircadianError("pacmd failed".to_string()))?;
+                let output = Command::new("grep")
+                    .arg("state: RUNNING") // Does not includes CORKED == Paused audio
+                    .stdin(stdout)
+                    .output()?;
+                let output_str = String::from_utf8(output.stdout)?;
+                let lines: Vec<&str> = output_str.split("\n")
+                    .filter(|l| l.len() > 0)
+                    .collect();
+                count += lines.len();
+            },
+            None    => continue,
+        }
+
+    }
     Ok(count > 0)
 }
 
