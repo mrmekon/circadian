@@ -504,7 +504,7 @@ fn exist_net_connection(conn: NetConnection) -> ExistResult {
 }
 
 /// Determine whether audio is actively playing on any ALSA interface.
-fn exist_audio() -> ExistResult {
+fn exist_audio_alsa() -> ExistResult {
     let mut count = 0;
     for device in glob("/proc/asound/card*/pcm*/sub*/status")? {
         if let Ok(path) = device {
@@ -514,7 +514,7 @@ fn exist_audio() -> ExistResult {
                 .stdout(Stdio::piped()).spawn()?;
             let _ = cat_output.wait()?;
             let stdout = cat_output.stdout
-                .ok_or(CircadianError("pacmd failed".to_string()))?;
+                .ok_or(CircadianError("cat /proc/asound/* failed".to_string()))?;
             let output = Command::new("grep")
                 .arg("state:")
                 .stdin(stdout)
@@ -527,6 +527,34 @@ fn exist_audio() -> ExistResult {
         }
     }
     Ok(count > 0)
+}
+
+/// Determine whether audio is actively playing on any Pulseaudio interface.
+fn exist_audio_pulseaudio() -> ExistResult {
+    let mut count = 0;
+    let mut cat_output = Command::new("pacmd")
+        .arg("list-sink-inputs")
+        .stderr(Stdio::null())
+        .stdout(Stdio::piped()).spawn()?;
+    let _ = cat_output.wait()?;
+    let stdout = cat_output.stdout
+        .ok_or(CircadianError("pacmd failed".to_string()))?;
+    let output = Command::new("grep")
+        .arg("state: RUNNING") // Does not includes CORKED == Paused audio
+        .stdin(stdout)
+        .output()?;
+    let output_str = String::from_utf8(output.stdout)?;
+    let lines: Vec<&str> = output_str.split("\n")
+        .filter(|l| l.len() > 0)
+        .collect();
+    count += lines.len();
+    Ok(count > 0)
+}
+
+fn exist_audio() -> ExistResult {
+    let audio_alsa = exist_audio_alsa();
+    let audio_pulseaudio = exist_audio_pulseaudio();
+    Ok(*audio_alsa.as_ref().unwrap_or(&false) || *audio_pulseaudio.as_ref().unwrap_or(&false))
 }
 
 struct CircadianLaunchOptions {
@@ -850,8 +878,8 @@ fn main() {
         println!("'netstat' command required by ssh/smb/nfs_block failed.  Exiting.");
         std::process::exit(1);
         }
-    if config.audio_block && exist_audio().is_err() {
-        println!("'/proc/asound/' required by audio_block is unreadable.  Exiting.");
+    if config.audio_block && (exist_audio_alsa().is_err() && exist_audio_pulseaudio().is_err())  {
+        println!("'/proc/asound/' and pacmd required by audio_block is unreadable. Exiting.");
         std::process::exit(1);
     }
     if config.process_block.len() > 0 && exist_process("").is_err() {

@@ -83,6 +83,7 @@ Follow systemd instructions, and port circadian.service to whatever format you w
     * xssstate
     * xprintidle
     * netstat
+    * pacmd
     * rustc + cargo (if building locally)
 * Should already have
     * grep
