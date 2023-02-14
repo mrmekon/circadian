@@ -21,6 +21,8 @@
  * along with Circadian.  If not, see <http://www.gnu.org/licenses/>.
  */
 extern crate regex;
+
+use std::collections::HashSet;
 use regex::Regex;
 
 extern crate glob;
@@ -540,7 +542,7 @@ fn exist_audio_pulseaudio() -> ExistResult {
     let users_stdout = users_output
         .map_err(| _ | CircadianError("users failed".to_string()));
     let users_output_str = String::from_utf8(users_stdout?.stdout)?;
-    let active_users: Vec<&str> = users_output_str.split(" ")
+    let active_users: HashSet<&str> = users_output_str.split(" ")
         .filter(|l| l.len() > 0)
         .collect();
 
