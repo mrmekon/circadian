@@ -56,6 +56,16 @@ When you are happy with the config, continue:
 $ sudo systemctl enable --now circadian
 ```
 
+### Arch Linux
+
+* Use your favorite AUR package manager
+
+```
+yay -S circadian
+```
+
+Consider installing the optional packages of `xprintidle` and `xssstate` for X11 based idle detection and `net-tools` for SSH detection. Both of this options are enabled by default.
+
 
 ### Any other system with systemd
 
