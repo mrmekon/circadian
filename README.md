@@ -53,8 +53,7 @@ Edit /etc/circadian.conf to configure.  The default is to suspend with systemd a
 When you are happy with the config, continue:
 
 ```
-$ sudo systemctl enable circadian
-$ sudo systemctl start circadian
+$ sudo systemctl enable --now circadian
 ```
 
 
