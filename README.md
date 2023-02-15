@@ -42,13 +42,19 @@ Circadian exists because modern Linux distros already support suspend-on-idle, b
 
 ### Debian x86-64
 
-* Download [Circadian 0.6.0](https://github.com/mrmekon/circadian/releases/download/0.6.0/circadian_0.6.0-1_amd64.deb)
+* Download the latest [Circadian release](https://github.com/mrmekon/circadian/releases/)
 
 ```
 $ sudo dpkg -i circadian_0.6.0-1_amd64.deb
 ```
 
-Edit /etc/circadian.conf to configure.  The default is to suspend with systemd after 2 hours of idle.
+If desired, install tooling to detect network (`netstat`), X11 (`xssstate` and`xprintidle`), audio activity (`pacmd`):
+
+```
+$ sudo apt-get install suckless-tools xprintidle net-tools pulseaudio-utils
+```
+
+Edit `/etc/circadian.conf` to configure.  The default is to suspend with systemd after 2 hours of idle.
 
 When you are happy with the config, continue:
 
