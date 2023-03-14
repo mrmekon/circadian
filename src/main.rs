@@ -551,16 +551,16 @@ fn exist_audio_pulseaudio() -> ExistResult {
         match get_user_by_name(&active_user.trim()) {
             Some(x) => {
                 let active_user_id = x.uid();
-                let mut pacmd_output = Command::new("pacmd").uid(active_user_id)
+                let mut pactl_output = Command::new("pactl").uid(active_user_id)
                     .env("XDG_RUNTIME_DIR", format!("/run/user/{}", active_user_id))
-                    .arg("list-sink-inputs")
+                    .args(["list", "sinks", "short"])
                     .stderr(Stdio::null())
                     .stdout(Stdio::piped()).spawn()?;
-                let _ = pacmd_output.wait()?;
-                let stdout = pacmd_output.stdout
-                    .ok_or(CircadianError("pacmd failed".to_string()))?;
+                let _ = pactl_output.wait()?;
+                let stdout = pactl_output.stdout
+                    .ok_or(CircadianError("pactl failed".to_string()))?;
                 let output = Command::new("grep")
-                    .arg("state: RUNNING") // Does not includes CORKED == Paused audio
+                    .arg("RUNNING") // Does not includes IDLE == Paused audio
                     .stdin(stdout)
                     .output()?;
                 let output_str = String::from_utf8(output.stdout)?;
@@ -904,7 +904,7 @@ fn main() {
         std::process::exit(1);
         }
     if config.audio_block && (exist_audio_alsa().is_err() && exist_audio_pulseaudio().is_err())  {
-        println!("'/proc/asound/' and pacmd required by audio_block is unreadable. Exiting.");
+        println!("'/proc/asound/' and pactl required by audio_block is unreadable. Exiting.");
         std::process::exit(1);
     }
     if config.process_block.len() > 0 && exist_process("").is_err() {
