@@ -48,7 +48,7 @@ Circadian exists because modern Linux distros already support suspend-on-idle, b
 $ sudo dpkg -i circadian_0.6.0-1_amd64.deb
 ```
 
-If desired, install tooling to detect network (`netstat`), X11 (`xssstate` and`xprintidle`), audio activity (`pacmd`):
+If desired, install tooling to detect network (`netstat`), X11 (`xssstate` and`xprintidle`), audio activity (`pactl`):
 
 ```
 $ sudo apt-get install suckless-tools xprintidle net-tools pulseaudio-utils
@@ -98,7 +98,7 @@ Follow systemd instructions, and port circadian.service to whatever format you w
     * xssstate
     * xprintidle
     * netstat
-    * pacmd
+    * pactl
     * rustc + cargo (if building locally)
 * Should already have
     * grep
