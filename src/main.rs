@@ -23,6 +23,7 @@
 extern crate regex;
 
 use std::collections::HashSet;
+use std::io::BufRead;
 use regex::Regex;
 
 extern crate glob;
@@ -340,6 +341,42 @@ fn count_w_fields() -> Result<usize, CircadianError> {
     Ok(num_fields)
 }
 
+// Returns tuple containing argument string to provide to `w` to have
+// the FROM field included, and the 0-indexed offset of the field.
+fn w_from_args() -> Result<(String, usize), CircadianError> {
+    // Ask for a fake user to get just the header and check if the
+    // FROM field is enabled.
+    let w_output = Command::new("w")
+        .arg("-us")
+        .arg("CIRCADIAN_FAKEUSER")
+        .output()?;
+    let w_fields: Vec<String> = w_output.stdout
+        .lines()
+        .nth(1) // second line is the header
+        .ok_or(CircadianError("w command has no output".into()))??
+        .split_whitespace().map(|x| x.to_owned()).collect();
+    let from_header = String::from("FROM");
+    let (hargs, args) = match w_fields.contains(&from_header) {
+        true => ("-hus".to_string(), "-us".to_string()),
+        false => ("-husf".to_string(), "-usf".to_string()),
+    };
+
+    // Do it again with FROM field on and find its index.
+    let w_output = Command::new("w")
+        .arg(&args)
+        .arg("CIRCADIAN_FAKEUSER")
+        .output()?;
+    let w_fields: Vec<String> = w_output.stdout
+        .lines()
+        .nth(1)
+        .ok_or(CircadianError("w command has no output".into()))??
+        .split_whitespace().map(|x| x.to_owned()).collect();
+    let idx = w_fields.iter()
+        .position(|x| x == &from_header)
+        .ok_or(CircadianError("w command arguments invalid".into()))?;
+    Ok((hargs, idx))
+}
+
 /// Call 'w' command and return minimum idle time
 fn idle_w() -> IdleResult {
     let num_fields = count_w_fields()?;
@@ -373,6 +410,7 @@ fn idle_w() -> IdleResult {
 /// X display.  The minimum of all found idle times is returned.
 fn idle_fn(cmd: &str, args: Vec<&str>) -> IdleResult {
     let mut display_mins: Vec<u32> = Vec::<u32>::new();
+    let (w_args, from_idx) = w_from_args()?;
     for device in glob("/tmp/.X11-unix/X*")? {
         let device: String = match device {
             Ok(p) => p.to_str().unwrap_or("0").to_owned(),
@@ -380,12 +418,12 @@ fn idle_fn(cmd: &str, args: Vec<&str>) -> IdleResult {
         };
         let display = format!(":{}", device.chars().rev().next().unwrap_or('0'));
         let mut output = Command::new("w")
-            .arg("-hus")
+            .arg(&w_args)
             .stdout(Stdio::piped()).spawn()?;
         let _ = output.wait()?;
         let w_stdout = output.stdout
             .ok_or(CircadianError("w command has no output".into()))?;
-        let awk_arg = format!("{{if ($3 ~ /^{}/) print $1}}", display);
+        let awk_arg = format!("{{if (${} ~ /^{}/) print $1}}", from_idx + 1, display);
         let output = Command::new("awk")
             .arg(awk_arg)
             .stdin(w_stdout)
@@ -401,15 +439,18 @@ fn idle_fn(cmd: &str, args: Vec<&str>) -> IdleResult {
             .unwrap_or(String::new());
         uid.pop();
         let uid = uid.parse::<u32>().unwrap_or(0);
-        let output = Command::new(cmd)
+        // allow this command to fail, in case there are several X
+        // servers running.
+        if let Ok(output) = Command::new(cmd)
             .args(&args)
             .uid(uid)
             .env("DISPLAY", display)
-            .output()?;
-        let mut idle_str = String::from_utf8(output.stdout)
-            .unwrap_or(String::new());
-        idle_str.pop();
-        display_mins.push(idle_str.parse::<u32>().unwrap_or(std::u32::MAX)/1000)
+            .output() {
+                let mut idle_str = String::from_utf8(output.stdout)
+                    .unwrap_or(String::new());
+                idle_str.pop();
+                display_mins.push(idle_str.parse::<u32>().unwrap_or(std::u32::MAX)/1000)
+        }
     }
     match display_mins.len() {
         0 => Err(CircadianError("No displays found.".to_string())),
