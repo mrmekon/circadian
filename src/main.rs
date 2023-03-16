@@ -45,9 +45,32 @@ use users::{get_user_by_name};
 use std::io::Write;
 use std::process::Stdio;
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use std::os::unix::process::CommandExt;
+
+pub static VERBOSITY: AtomicUsize = AtomicUsize::new(0);
+pub const MAX_VERBOSITY: usize = 4;
+#[allow(unused_macros)]
+macro_rules! println_vb1 {
+    () => { if VERBOSITY.load(Ordering::SeqCst) > 0 { println!() } };
+    ($($arg:tt)*) => {{ if VERBOSITY.load(Ordering::SeqCst) > 0 { println!($($arg)*); } }};
+}
+#[allow(unused_macros)]
+macro_rules! println_vb2 {
+    () => { if VERBOSITY.load(Ordering::SeqCst) > 1 { println!() } };
+    ($($arg:tt)*) => {{ if VERBOSITY.load(Ordering::SeqCst) > 1 { println!($($arg)*); } }};
+}
+#[allow(unused_macros)]
+macro_rules! println_vb3 {
+    () => { if VERBOSITY.load(Ordering::SeqCst) > 2 { println!() } };
+    ($($arg:tt)*) => {{ if VERBOSITY.load(Ordering::SeqCst) > 2 { println!($($arg)*); } }};
+}
+#[allow(unused_macros)]
+macro_rules! println_vb4 {
+    () => { if VERBOSITY.load(Ordering::SeqCst) > 3 { println!() } };
+    ($($arg:tt)*) => {{ if VERBOSITY.load(Ordering::SeqCst) > 3 { println!($($arg)*); } }};
+}
 
 pub struct CircadianError(String);
 
@@ -245,7 +268,7 @@ static SIGUSR_SIGNALED: AtomicBool = AtomicBool::new(false);
 
 /// Set global flag when SIGUSR1 signal is received
 extern fn sigusr1_handler(_: i32) {
-    SIGUSR_SIGNALED.store(true, Ordering::Relaxed);
+    SIGUSR_SIGNALED.store(true, Ordering::SeqCst);
 }
 
 /// Register SIGUSR1 signal handler
@@ -627,6 +650,7 @@ struct CircadianLaunchOptions {
     config_file: String,
     //script_dir: String,
     test: bool,
+    verbosity: Option<usize>,
 }
 
 #[derive(Default,Debug)]
@@ -649,6 +673,16 @@ fn read_config(file_path: &str) -> Result<CircadianConfig, CircadianError> {
     println!("Reading config from file: {}", file_path);
     let i = Ini::load_from_file(file_path)?;
     let mut config: CircadianConfig = Default::default();
+    if let Some(section) = i.section(Some("settings".to_owned())) {
+        let verbosity: usize = section.get("verbosity")
+            .and_then(|x| match x {
+                x if x.len() > 0 => { x.parse::<usize>().ok() },
+                _ => None,
+            })
+            .unwrap_or(0);
+        let verbosity = std::cmp::min(verbosity, MAX_VERBOSITY);
+        VERBOSITY.store(verbosity, Ordering::SeqCst)
+    }
     if let Some(section) = i.section(Some("actions".to_owned())) {
         config.idle_time = section.get("idle_time")
             .map_or(0, |x| if x.len() > 0 {
@@ -701,15 +735,21 @@ fn read_cmdline() -> CircadianLaunchOptions {
         .args_from_usage(
             "-f, --config=[FILE] ''
              -t, --test 'Run idle tests and exit'
+             -v, --verbose... 'Increase output verbosity'
              -d, --script-dir=[DIR] ''")
         .get_matches();
     let config = matches.value_of("config").unwrap_or("/etc/circadian.conf");
     //let script_dir = matches.value_of("script-dir").unwrap_or("");
     //println!("Script dir: {}", script_dir);
+    let verbosity = match matches.occurrences_of("verbose") {
+        x if x == 0 => None,
+        x => Some(x as usize)
+    };
     CircadianLaunchOptions {
         config_file: config.to_owned(),
         //script_dir: script_dir.to_owned(),
         test: matches.is_present("test"),
+        verbosity,
     }
 }
 
@@ -911,6 +951,11 @@ fn main() {
         });
     println!("{:?}", config);
 
+    // override config verbosity from command-line
+    if let Some(verbosity) = launch_opts.verbosity {
+        VERBOSITY.store(verbosity, Ordering::SeqCst);
+    }
+
     if launch_opts.test {
         println!("Got --test: running idle test and exiting.");
         let start = time::now_utc().to_timespec().sec as i64;
@@ -1003,7 +1048,7 @@ fn main() {
         // for signals and clock jumps.
         for _ in 0 .. sleep_time / sleep_chunk {
             // Print stats when SIGUSR1 signal received
-            let signaled = SIGUSR_SIGNALED.swap(false, Ordering::Relaxed);
+            let signaled = SIGUSR_SIGNALED.swap(false, Ordering::SeqCst);
             if signaled {
                 let idle = test_idle(&config, start);
                 let tests = test_nonidle(&config);
