@@ -1,4 +1,17 @@
 ##
+## Settings
+##
+## Options used to configure Circadian itself.
+##
+[settings]
+# How verbose the output should be while running, between 0 and 4
+# inclusive.  '0' is for normal usage, '4' is intended for active
+# debugging.
+#
+# Default: 0
+verbosity = 0
+
+##
 ## Heuristics
 ##
 ## Options used to detect whether the system is idle.
