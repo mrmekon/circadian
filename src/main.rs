@@ -401,6 +401,52 @@ fn w_from_args() -> Result<(String, usize), CircadianError> {
     Ok((hargs, idx))
 }
 
+fn xauthority_for_uid(uid: u32) -> String {
+    let default = std::env::var("XAUTHORITY").unwrap_or("".into());
+
+    // getent displays the row from /etc/passwd for a specific user
+    let getent_stdout = Stdio::piped();
+    let mut getent_output = match Command::new("getent")
+        .arg("passwd")
+        .arg(uid.to_string())
+        .stdout(getent_stdout).spawn() {
+            Ok(w) => w,
+            _ => return default,
+        };
+    let _ = match getent_output.wait() {
+        Ok(_) => {},
+        _ => return default,
+    };
+    let getent_stdout = match getent_output.stdout {
+        Some(w) => w,
+        _ => return default,
+    };
+
+    // the 6th colon-separated field is the user's home directory
+    let cut_output = match Command::new("cut")
+        .arg("-d:")
+        .arg("-f6")
+        .stdin(getent_stdout)
+        .output() {
+            Ok(o) => o,
+            _ => return default,
+        };
+
+    // look for ~/.Xauthority for the specified user
+    let homedir = String::from_utf8(cut_output.stdout)
+        .unwrap_or(default.clone())
+        .trim().to_owned();
+    let mut homedir = std::path::PathBuf::from(homedir);
+    homedir.push(".Xauthority");
+
+    // return the path if it exists, otherwise just use whatever the
+    // current XAUTHORITY environment variable is set to
+    match homedir.exists() {
+        true => homedir.to_str().unwrap_or(&default).to_owned(),
+        _ => default,
+    }
+}
+
 /// Call 'w' command and return minimum idle time
 fn idle_w() -> IdleResult {
     let num_fields = count_w_fields()?;
@@ -497,12 +543,15 @@ fn idle_fn(cmd: &str, args: Vec<&str>) -> IdleResult {
         println_vb4!("    - socket owner: {}", owner_uid);
         for uid in user_list {
             println_vb4!("    - UID: {}", uid);
+            let xauth = xauthority_for_uid(uid);
+            println_vb4!("    - xauthority: {}", xauth);
             // allow this command to fail, in case there are several X
             // servers running.
             match Command::new(cmd)
                 .args(&args)
                 .uid(uid)
                 .env("DISPLAY", &display)
+                .env("XAUTHORITY", &xauth)
                 .output() {
                     Ok(output) => {
                         let mut idle_str = String::from_utf8(output.stdout)
