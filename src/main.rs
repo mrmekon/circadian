@@ -24,6 +24,7 @@ extern crate regex;
 
 use std::collections::HashSet;
 use std::io::BufRead;
+use std::os::linux::fs::MetadataExt;
 use regex::Regex;
 
 extern crate glob;
@@ -434,12 +435,15 @@ fn idle_w() -> IdleResult {
 fn idle_fn(cmd: &str, args: Vec<&str>) -> IdleResult {
     let mut display_mins: Vec<u32> = Vec::<u32>::new();
     let (w_args, from_idx) = w_from_args()?;
+    println_vb4!("cmd: {} / w args: '{}' / w field: {}", cmd, w_args, from_idx);
     for device in glob("/tmp/.X11-unix/X*")? {
+        println_vb4!("  - socket: {:?}", device);
         let device: String = match device {
             Ok(p) => p.to_str().unwrap_or("0").to_owned(),
             _ => "0".to_owned(),
         };
         let display = format!(":{}", device.chars().rev().next().unwrap_or('0'));
+        println_vb4!("    - display: {}", display);
         let mut output = Command::new("w")
             .arg(&w_args)
             .stdout(Stdio::piped()).spawn()?;
@@ -453,26 +457,65 @@ fn idle_fn(cmd: &str, args: Vec<&str>) -> IdleResult {
             .output()?;
         let user_str = String::from_utf8(output.stdout)
             .unwrap_or(String::new());
-        let user = user_str.split("\n").next().unwrap_or("root");
-        let output = Command::new("id")
-            .arg("-u")
-            .arg(user)
-            .output()?;
-        let mut uid = String::from_utf8(output.stdout)
-            .unwrap_or(String::new());
-        uid.pop();
-        let uid = uid.parse::<u32>().unwrap_or(0);
-        // allow this command to fail, in case there are several X
-        // servers running.
-        if let Ok(output) = Command::new(cmd)
-            .args(&args)
-            .uid(uid)
-            .env("DISPLAY", display)
-            .output() {
-                let mut idle_str = String::from_utf8(output.stdout)
-                    .unwrap_or(String::new());
-                idle_str.pop();
-                display_mins.push(idle_str.parse::<u32>().unwrap_or(std::u32::MAX)/1000)
+        println_vb4!("    - awk users ({}): {}", user_str.len(), user_str.replace("\n", " / "));
+
+        // Get a list of all system users with open sessions to this
+        // X11 display, and de-duplicate by storing in a set.  There
+        // should be one per logged in user if a session manager is in
+        // use, plus one for each terminal the user has open.
+        let user_list: HashSet<&str> = user_str.split("\n")
+            .map(|x| x.trim())
+            .filter(|x| x.len() > 0)
+            .collect();
+        // Convert all of the user names to UIDs.
+        let mut user_list: HashSet<u32> = user_list.iter()
+            .filter_map(|x| match x.trim() {
+                user if user.len() > 0 => {
+                    match Command::new("id").arg("-u").arg(user).output() {
+                        Ok(output) => {
+                            let mut uid = String::from_utf8(output.stdout)
+                                .unwrap_or(String::new());
+                            uid.pop();
+                            let uid = uid.parse::<u32>().unwrap_or(0);
+                            Some(uid)
+                        },
+                        Err(_) => {
+                            None
+                        }
+                    }
+                },
+                _ => {
+                    None
+                }
+            })
+            .collect();
+        // Insert the UID of the socket owner, too.  This covers X
+        // servers spawned without session managers, i.e. those
+        // spawned with 'startx' or Xephyr.
+        let owner_uid = std::fs::metadata(&device)?.st_uid();
+        user_list.insert(owner_uid);
+        println_vb4!("    - socket owner: {}", owner_uid);
+        for uid in user_list {
+            println_vb4!("    - UID: {}", uid);
+            // allow this command to fail, in case there are several X
+            // servers running.
+            match Command::new(cmd)
+                .args(&args)
+                .uid(uid)
+                .env("DISPLAY", &display)
+                .output() {
+                    Ok(output) => {
+                        let mut idle_str = String::from_utf8(output.stdout)
+                            .unwrap_or(String::new());
+                        idle_str.pop();
+                        let idle = idle_str.parse::<u32>().unwrap_or(std::u32::MAX)/1000;
+                        println_vb4!("      - idle: {}", idle);
+                        display_mins.push(idle);
+                    },
+                    Err(e) => {
+                        println!("WARNING: {} failed for socket {} with error: {}", cmd, device, e);
+                    },
+                }
         }
     }
     match display_mins.len() {
