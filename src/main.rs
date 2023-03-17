@@ -44,6 +44,7 @@ extern crate users;
 use users::{get_user_by_name};
 
 use std::io::Write;
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -401,8 +402,63 @@ fn w_from_args() -> Result<(String, usize), CircadianError> {
     Ok((hargs, idx))
 }
 
-fn xauthority_for_uid(uid: u32) -> String {
+fn xauthority_from_cmdline(display: &str) -> Result<String, CircadianError> {
+    // Look for PIDs of processes with a variety of X11-related names.
+    let pgrep_out = Command::new("pgrep")
+        .arg("(X11|Xorg|xinit|Xwayland|Xephyr)")
+        .output()?;
+    let pids: Vec<String> = String::from_utf8(pgrep_out.stdout)
+        .unwrap_or(String::new())
+        .split("\n")
+        .map(|s| s.trim().to_owned())
+        .filter(|s| s.len() > 0)
+        .collect();
+    let display = display.to_owned();
+
+    // Read the command-line arguments out of procfs for all of the
+    // matching PIDs.
+    for pid in &pids {
+        let cmdline_path = PathBuf::from(format!("/proc/{}/cmdline", pid));
+        if !cmdline_path.exists() {
+            continue;
+        }
+        let raw_args: String = String::from_utf8(std::fs::read(&cmdline_path)?)?;
+        let split_args: Vec<String> = raw_args.split("\0").map(|s| s.to_owned()).collect();
+
+        // Look for processes that have the display name (":0") as an
+        // argument, and also have a "-auth" argument.  The parameter
+        // after "-auth" should be an xauth file.
+        let auth_arg = String::from("-auth");
+        if split_args.contains(&auth_arg) && split_args.contains(&display) {
+            // Grab the next argument after "-auth"
+            let split_args: Vec<String> = split_args.iter().rev().take_while(|s| *s != "-auth").map(|s| s.to_owned()).collect();
+            let auth_arg: &str = split_args.iter().map(|x| x.as_str()).rev().next().unwrap_or("");
+            let auth_path = PathBuf::from(auth_arg);
+            // Ensure the file actually exists
+            if auth_path.exists() {
+                // return the first match
+                println_vb4!("    - xauth from cmdline: {}", auth_arg);
+                return Ok(auth_arg.to_string());
+            }
+        }
+    }
+
+    Err(CircadianError("No auth file specified on command line.".into()))
+}
+
+fn xauthority_for_uid(uid: u32, display: &str) -> String {
+    // Default to whatever is currently in the XAUTHORITY environment
+    // variable, if anything.
     let default = std::env::var("XAUTHORITY").unwrap_or("".into());
+
+    // If root user, try to read the xauth file out of the
+    // command-line arguments.  This one takes highest priority, if it
+    // exists.
+    if uid == 0 {
+        if let Ok(xauth) = xauthority_from_cmdline(display) {
+            return xauth;
+        }
+    }
 
     // getent displays the row from /etc/passwd for a specific user
     let getent_stdout = Stdio::piped();
@@ -436,11 +492,11 @@ fn xauthority_for_uid(uid: u32) -> String {
     let homedir = String::from_utf8(cut_output.stdout)
         .unwrap_or(default.clone())
         .trim().to_owned();
-    let mut homedir = std::path::PathBuf::from(homedir);
+    let mut homedir = PathBuf::from(homedir);
     homedir.push(".Xauthority");
 
     // return the path if it exists, otherwise just use whatever the
-    // current XAUTHORITY environment variable is set to
+    // current XAUTHORITY environment variable is set to.
     match homedir.exists() {
         true => homedir.to_str().unwrap_or(&default).to_owned(),
         _ => default,
@@ -540,10 +596,13 @@ fn idle_fn(cmd: &str, args: Vec<&str>) -> IdleResult {
         // spawned with 'startx' or Xephyr.
         let owner_uid = std::fs::metadata(&device)?.st_uid();
         user_list.insert(owner_uid);
+        // Always give it a try as root, too, since root can read
+        // xauth files from anywhere.
+        user_list.insert(0);
         println_vb4!("    - socket owner: {}", owner_uid);
         for uid in user_list {
             println_vb4!("    - UID: {}", uid);
-            let xauth = xauthority_for_uid(uid);
+            let xauth = xauthority_for_uid(uid, &display);
             println_vb4!("    - xauthority: {}", xauth);
             // allow this command to fail, in case there are several X
             // servers running.
@@ -747,6 +806,7 @@ struct CircadianLaunchOptions {
 
 #[derive(Default,Debug)]
 struct CircadianConfig {
+    verbosity: usize,
     idle_time: u64,
     auto_wake: Option<String>,
     on_idle: Option<String>,
@@ -773,7 +833,8 @@ fn read_config(file_path: &str) -> Result<CircadianConfig, CircadianError> {
             })
             .unwrap_or(0);
         let verbosity = std::cmp::min(verbosity, MAX_VERBOSITY);
-        VERBOSITY.store(verbosity, Ordering::SeqCst)
+        VERBOSITY.store(verbosity, Ordering::SeqCst);
+        config.verbosity = verbosity;
     }
     if let Some(section) = i.section(Some("actions".to_owned())) {
         config.idle_time = section.get("idle_time")
