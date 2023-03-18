@@ -37,10 +37,10 @@ tag-message = "Release {{version}}"
 lto = true
 
 [dependencies]
-regex = "1.7.0"
-glob = "0.3.0"
+regex = "1.7.1"
+glob = "0.3.1"
 rust-ini = "0.13.0"
 clap = "3.2.23"
 time = "0.1.45"
-nix = "0.26.1"
+nix = "0.26.2"
 users = "0.11.0"
