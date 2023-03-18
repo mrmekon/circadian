@@ -1,0 +1,43 @@
+v0.8.3 [2023-03-18]
+
+  * Switch pulseaudio detection to pactl (pipewire-compatible)
+  * Significantly more robust X11 idle detection
+  * Add output verbosity setting
+
+v0.8.2 [2023-02-19]
+
+  * Add pulseaudio audio detection
+
+v0.8.1 [2023-01-02]
+
+  * [no changes]
+
+v0.8.0 (unreleased)
+
+  * Add support for monitoring NFS status
+
+v0.7.0 [2022-01-08]
+
+  * Add command-line option to test idle state
+  * Fix 'w' idle detection on non-debian systems
+  * Fix systemd service install location
+
+v0.6.0 [2017-11-25]
+
+  * Support a minimum wake time before re-sleeping
+  * Detect X idle time when no active X session
+
+v0.5.0 [2017-11-16]
+
+  * Reschedule wake timer any time it is overdue.
+  * Reschedule wake timer when waking from sleep.
+
+v0.4.0 [2017-11-16]
+
+  * Reschedule wake time with RTC clock
+  * Install to /usr/local/bin instead of /usr/bin
+  * Install systemd service system-wide
+
+v0.3.0 [2017-11-15]
+
+  * Initial release
