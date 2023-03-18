@@ -40,9 +40,10 @@ extern crate nix;
 use nix::sys::signal;
 
 extern crate time;
+use time::macros::*;
 
 extern crate users;
-use users::{get_user_by_name};
+use users::get_user_by_name;
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -136,8 +137,13 @@ impl From<nix::Error> for CircadianError {
         CircadianError(error.to_string().to_owned())
     }
 }
-impl From<time::ParseError> for CircadianError {
-    fn from(error: time::ParseError) -> Self {
+impl From<time::error::Parse> for CircadianError {
+    fn from(error: time::error::Parse) -> Self {
+        CircadianError(error.to_string().to_owned())
+    }
+}
+impl From<time::error::ComponentRange> for CircadianError {
+    fn from(error: time::error::ComponentRange) -> Self {
         CircadianError(error.to_string().to_owned())
     }
 }
@@ -893,7 +899,7 @@ fn read_config(file_path: &str) -> Result<CircadianConfig, CircadianError> {
 }
 
 fn test_idle(config: &CircadianConfig, start: i64) -> IdleResponse {
-    let now = time::now_utc().to_timespec().sec as i64;
+    let now = time::OffsetDateTime::now_utc().unix_timestamp();
     let tty = idle_w();
     let xssstate = idle_xssstate();
     let xprintidle = idle_xprintidle();
@@ -980,8 +986,8 @@ fn is_rtc_utc() -> Result<bool, CircadianError> {
         let t = String::from_utf8(output.stdout)?;
         Ok(t.split(":").take(2).collect::<Vec<&str>>().join(":"))
     }
-    let utc_tm = time::now_utc();
-    let utc_time = format!("{:02}:{:02}", utc_tm.tm_hour, utc_tm.tm_min);
+    let utc_tm = time::OffsetDateTime::now_utc().time();
+    let utc_time = format!("{:02}:{:02}", utc_tm.hour(), utc_tm.minute());
     let rtc_time = get_rtc_time()?;
     let is_utc = utc_time == rtc_time;
     let is_synced = utc_time.split(":").nth(1) == rtc_time.split(":").nth(1);
@@ -992,28 +998,28 @@ fn is_rtc_utc() -> Result<bool, CircadianError> {
 }
 
 fn auto_wake_to_epoch(auto_wake: &str) -> Result<AutoWakeEpoch, CircadianError> {
-    let is_utc = is_rtc_utc()?;
-    let auto_wake_tm = time::strptime(auto_wake, "%H:%M")?;
-    let now_local = time::now();
-    let mut target_time_local = now_local.clone();
-    target_time_local.tm_hour = auto_wake_tm.tm_hour;
-    target_time_local.tm_min = auto_wake_tm.tm_min;
-    target_time_local.tm_sec = 0;
+    let _ = is_rtc_utc()?; // just to detect RTC sync errors
+    let format = format_description!("[hour]:[minute]");
+    let auto_wake_tm = time::Time::parse(auto_wake, &format)?;
+    let now_local = match time::OffsetDateTime::now_local() {
+        Ok(l) => l,
+        _ => time::OffsetDateTime::now_utc(),
+    };
+    let target_time_local = now_local.clone();
+    let target_time_local = target_time_local.replace_hour(auto_wake_tm.hour())?;
+    let target_time_local = target_time_local.replace_minute(auto_wake_tm.minute())?;
+    let target_time_local = target_time_local.replace_second(0)?;
     let target_time_local = match target_time_local < now_local {
-        true => (target_time_local + time::Duration::days(1)).to_local(),
+        true => target_time_local + time::Duration::days(1),
         false => target_time_local,
     };
-    let target_time_utc = target_time_local.to_utc();
-    match is_utc {
-        true => Ok(AutoWakeEpoch {
-            epoch: target_time_utc.to_timespec().sec,
-            is_utc: true
-        }),
-        false => Ok(AutoWakeEpoch {
-            epoch: target_time_local.to_timespec().sec,
-            is_utc: false
-        }),
-    }
+
+    // UNIX timestamps are defined as being in UTC, and Linux's RTC is
+    // defined as taking UTC timestamps.
+    Ok(AutoWakeEpoch {
+        epoch: target_time_local.unix_timestamp(),
+        is_utc: true
+    })
 }
 fn set_rtc_wakealarm(timestamp: i64) -> Result<(), CircadianError> {
     {
@@ -1051,8 +1057,11 @@ fn reschedule_auto_wake(auto_wake: Option<&String>, current_epoch: Option<AutoWa
     }
     let epoch = current_epoch.unwrap();
     let now = match epoch.is_utc {
-        true => time::now_utc().to_timespec().sec as i64,
-        false => time::now().to_timespec().sec as i64,
+        true => time::OffsetDateTime::now_utc().unix_timestamp(),
+        false => match time::OffsetDateTime::now_local() {
+            Ok(l) => l.unix_timestamp(),
+            _ => time::OffsetDateTime::now_utc().unix_timestamp(),
+        }
     };
     if now >= epoch.epoch {
         new_rtc = match set_auto_wake(auto_wake) {
@@ -1100,7 +1109,7 @@ fn main() {
 
     if launch_opts.test {
         println!("Got --test: running idle test and exiting.");
-        let start = time::now_utc().to_timespec().sec as i64;
+        let start = time::OffsetDateTime::now_utc().unix_timestamp();
         let idle = test_idle(&config, start);
         let tests = test_nonidle(&config);
         println!("Idle Detection Summary:\n{}{}", idle, tests);
@@ -1155,8 +1164,8 @@ fn main() {
     println!("Configuration valid.  Idle detection starting.");
 
     let mut idle_triggered = false;
-    let mut start = time::now_utc().to_timespec().sec as i64;
-    let mut watchdog = time::now_utc().to_timespec().sec as i64;
+    let mut start = time::OffsetDateTime::now_utc().unix_timestamp();
+    let mut watchdog = time::OffsetDateTime::now_utc().unix_timestamp();
     loop {
         let idle = test_idle(&config, start);
         // If it's idle, the idle command hasn't already run, and it has been
@@ -1197,11 +1206,11 @@ fn main() {
                 println!("Idle Detection Summary:\n{}{}", idle, tests);
             }
 
-            let now = time::now_utc().to_timespec().sec as i64;
+            let now = time::OffsetDateTime::now_utc().unix_timestamp();
             // Look for clock jumps that indicate the system slept
             if watchdog + 30 < now {
                 println!("Watchdog missed.  Wake from sleep!");
-                start = time::now_utc().to_timespec().sec as i64;
+                start = time::OffsetDateTime::now_utc().unix_timestamp();
                 let idle = test_idle(&config, start);
                 let tests = test_nonidle(&config);
                 println!("Idle state on wake:\n{}{}", idle, tests);
@@ -1220,7 +1229,7 @@ fn main() {
             // Kick watchdog timer frequently, and possibly reschedule auto-wake timer
             if watchdog + 10 < now {
                 current_rtc = reschedule_auto_wake(config.auto_wake.as_ref(), current_rtc);
-                watchdog = time::now_utc().to_timespec().sec as i64;
+                watchdog = time::OffsetDateTime::now_utc().unix_timestamp();
             }
             std::thread::sleep(std::time::Duration::from_millis(sleep_chunk));
         }
