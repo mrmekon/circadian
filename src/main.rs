@@ -31,6 +31,7 @@ extern crate glob;
 use glob::glob;
 
 extern crate clap;
+use clap::Parser;
 
 extern crate ini;
 use ini::Ini;
@@ -797,11 +798,22 @@ fn exist_audio() -> ExistResult {
     Ok(*audio_alsa.as_ref().unwrap_or(&false) || *audio_pulseaudio.as_ref().unwrap_or(&false))
 }
 
+#[derive(Parser)]
+#[command(author, version, about, long_about)]
+#[command(help_template = "\
+{name} v{version}, {author-with-newline}
+{about-with-newline}
+{usage-heading} {usage}
+
+{all-args}{after-help}
+")]
 struct CircadianLaunchOptions {
+    #[arg(short = 'f', long = "config", value_name = "FILE", default_value_t = String::from("/etc/circadian.conf"))]
     config_file: String,
-    //script_dir: String,
+    #[arg(short, long)]
     test: bool,
-    verbosity: Option<usize>,
+    #[arg(short, long = "verbose", action = clap::ArgAction::Count)]
+    verbosity: u8,
 }
 
 #[derive(Default,Debug)]
@@ -878,32 +890,6 @@ fn read_config(file_path: &str) -> Result<CircadianConfig, CircadianError> {
         }
     }
     Ok(config)
-}
-
-fn read_cmdline() -> CircadianLaunchOptions {
-    let matches = clap::App::new("circadian")
-        .version(env!("CARGO_PKG_VERSION"))
-        .author(env!("CARGO_PKG_AUTHORS"))
-        .about(env!("CARGO_PKG_DESCRIPTION"))
-        .args_from_usage(
-            "-f, --config=[FILE] ''
-             -t, --test 'Run idle tests and exit'
-             -v, --verbose... 'Increase output verbosity'
-             -d, --script-dir=[DIR] ''")
-        .get_matches();
-    let config = matches.value_of("config").unwrap_or("/etc/circadian.conf");
-    //let script_dir = matches.value_of("script-dir").unwrap_or("");
-    //println!("Script dir: {}", script_dir);
-    let verbosity = match matches.occurrences_of("verbose") {
-        x if x == 0 => None,
-        x => Some(x as usize)
-    };
-    CircadianLaunchOptions {
-        config_file: config.to_owned(),
-        //script_dir: script_dir.to_owned(),
-        test: matches.is_present("test"),
-        verbosity,
-    }
 }
 
 fn test_idle(config: &CircadianConfig, start: i64) -> IdleResponse {
@@ -1094,19 +1080,19 @@ fn test() {
 }
 
 fn main() {
-    println!("Circadian launching.");
-    let launch_opts = read_cmdline();
+    let launch_opts = CircadianLaunchOptions::parse();
     let config = read_config(&launch_opts.config_file)
         .unwrap_or_else(|x| {
             println!("{}", x);
             println!("Could not open config file.  Exiting.");
             std::process::exit(1);
         });
+    println!("Circadian launching.");
     println!("{:?}", config);
 
     // override config verbosity from command-line
-    if let Some(verbosity) = launch_opts.verbosity {
-        VERBOSITY.store(verbosity, Ordering::SeqCst);
+    if launch_opts.verbosity as usize > config.verbosity {
+        VERBOSITY.store(launch_opts.verbosity as usize, Ordering::SeqCst);
     }
 
     // override user locale to make all command outputs uniform (e.g. when parsing column headers or dates/times)
