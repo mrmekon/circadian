@@ -126,8 +126,8 @@ impl From<glob::PatternError> for CircadianError {
         CircadianError(error.to_string().to_owned())
     }
 }
-impl From<ini::ini::Error> for CircadianError {
-    fn from(error: ini::ini::Error) -> Self {
+impl From<ini::Error> for CircadianError {
+    fn from(error: ini::Error) -> Self {
         CircadianError(error.to_string().to_owned())
     }
 }
@@ -866,7 +866,7 @@ fn read_config(file_path: &str) -> Result<CircadianConfig, CircadianError> {
         config.on_wake = section.get("on_wake")
             .and_then(|x| if x.len() > 0 {Some(x.to_owned())} else {None});
     }
-    fn read_bool(s: &std::collections::HashMap<String,String>,
+    fn read_bool(s: &ini::Properties,
                  key: &str) -> bool {
         match s.get(key).unwrap_or(&"no".to_string()).to_lowercase().as_str() {
             "yes" | "true" | "1" => true,
