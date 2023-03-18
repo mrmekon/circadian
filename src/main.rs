@@ -1109,6 +1109,9 @@ fn main() {
         VERBOSITY.store(verbosity, Ordering::SeqCst);
     }
 
+    // override user locale to make all command outputs uniform (e.g. when parsing column headers or dates/times)
+    std::env::set_var("LC_ALL", "C");
+
     if launch_opts.test {
         println!("Got --test: running idle test and exiting.");
         let start = time::now_utc().to_timespec().sec as i64;
