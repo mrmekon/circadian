@@ -1173,7 +1173,7 @@ fn main() {
         // trigger.
         // Otherwise if it's idle, the idle command hasn't already run, and it has been
         // at least |idle_time| since the service started: enter idle state.
-        if watchdog + 30 < now && idle.is_idle && !idle_triggered {
+        if watchdog + 30 > now && idle.is_idle && !idle_triggered {
             let tests = test_nonidle(&config);
             if !tests.is_blocked {
                 println!("Idle state active:\n{}{}", idle, tests);
