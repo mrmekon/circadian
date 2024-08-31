@@ -103,7 +103,6 @@ Follow systemd instructions, and port circadian.service to whatever format you w
 * Should already have
     * grep
     * awk
-    * w
     * id
     * uptime
     * pgrep

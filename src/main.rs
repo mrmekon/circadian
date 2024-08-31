@@ -20,38 +20,34 @@
  * You should have received a copy of the GNU General Public License
  * along with Circadian.  If not, see <http://www.gnu.org/licenses/>.
  */
-extern crate regex;
 
-use std::collections::HashSet;
-use std::io::BufRead;
-use std::os::linux::fs::MetadataExt;
-use regex::Regex;
-
-extern crate glob;
-use glob::glob;
-
+ // External crates
 extern crate clap;
-use clap::Parser;
-
+extern crate glob;
 extern crate ini;
-use ini::Ini;
-
 extern crate nix;
-use nix::sys::signal;
-
+extern crate regex;
 extern crate time;
-use time::macros::*;
-
 extern crate users;
-use users::get_user_by_name;
 
+// Standard library imports
+use std::collections::HashSet;
+use std::fmt::Debug;
 use std::io::Write;
+use std::os::linux::fs::MetadataExt;
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
-use std::process::Stdio;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use std::os::unix::process::CommandExt;
+// Crate-specific imports
+use clap::Parser;
+use glob::glob;
+use ini::Ini;
+use nix::sys::signal;
+use time::macros::*;
+use users::get_user_by_name;
+use std::fs;
 
 pub static VERBOSITY: AtomicUsize = AtomicUsize::new(0);
 pub const MAX_VERBOSITY: usize = 4;
@@ -137,6 +133,11 @@ impl From<nix::Error> for CircadianError {
         CircadianError(error.to_string().to_owned())
     }
 }
+impl From<std::time::SystemTimeError> for CircadianError {
+    fn from(error: std::time::SystemTimeError) -> Self {
+        CircadianError(error.to_string().to_owned())
+    }
+}
 impl From<time::error::Parse> for CircadianError {
     fn from(error: time::error::Parse) -> Self {
         CircadianError(error.to_string().to_owned())
@@ -174,8 +175,6 @@ struct AutoWakeEpoch {
 
 #[derive(Debug)]
 struct IdleResponse {
-    w_idle: IdleResult,
-    w_enabled: bool,
     xssstate_idle: IdleResult,
     xssstate_enabled: bool,
     xprintidle_idle: IdleResult,
@@ -193,7 +192,6 @@ struct IdleResponse {
 impl std::fmt::Display for IdleResponse {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         let result_map = vec![
-            (self.w_idle.as_ref(), self.w_enabled, "w"),
             (self.xssstate_idle.as_ref(), self.xssstate_enabled, "xssstate"),
             (self.xprintidle_idle.as_ref(), self.xprintidle_enabled, "xprintidle"),
         ];
@@ -301,114 +299,6 @@ fn command_exists(cmd: &str) -> bool {
         }
 }
 
-/// Parse idle time strings from 'w' command into seconds
-fn parse_w_time(time_str: &str) -> Result<u32, CircadianError> {
-    let mut secs: u32 = 0;
-    let mut mins: u32 = 0;
-    let mut hours:u32 = 0;
-    let re_sec = Regex::new(r"^\d+.\d+s$")?;
-    let re_min = Regex::new(r"^\d+:\d+$")?;
-    let re_hour = Regex::new(r"^\d+:\d+m$")?;
-    if re_sec.is_match(time_str) {
-        let time_str: &str = time_str.trim_matches('s');
-        let parts: Vec<u32> = time_str.split(".")
-            .map(|s| str::parse::<u32>(s).unwrap_or(0))
-            .collect();
-        secs = *parts.get(0).unwrap_or(&0);
-    }
-    else if re_min.is_match(time_str) {
-        let parts: Vec<u32> = time_str.split(":")
-            .map(|s| str::parse::<u32>(s).unwrap_or(0))
-            .collect();
-        mins = *parts.get(0).unwrap_or(&0);
-        secs = *parts.get(1).unwrap_or(&0);
-    }
-    else if re_hour.is_match(time_str) {
-        let time_str: &str = time_str.trim_matches('m');
-        let parts: Vec<u32> = time_str.split(":")
-            .map(|s| str::parse::<u32>(s).unwrap_or(0))
-            .collect();
-        hours = *parts.get(0).unwrap_or(&0);
-        mins = *parts.get(1).unwrap_or(&0);
-    }
-    else {
-        return Err(CircadianError("Invalid idle format".to_string()));
-    }
-    Ok((hours*60*60) + (mins*60) + secs)
-}
-
-// count number of fields in 'w' output
-//
-// This is a stupid requirement because some linux distros build w
-// with the 'FROM' field enabled by default and others with it
-// disabled.  'w' has a command-line option to *toggle* the field, but
-// no to forcibly enable/disable it.
-fn count_w_fields() -> Result<usize, CircadianError> {
-    let w_stdout = Stdio::piped();
-    let s_stdout = Stdio::piped();
-    let mut w_output = Command::new("w")
-        .arg("-us")
-        .stdout(w_stdout).spawn()?;
-    let _ = w_output.wait()?;
-    let w_stdout = w_output.stdout
-        .ok_or(CircadianError("w command has no output".into()))?;
-    // print just the second row, the header
-    let mut sed_output = Command::new("sed")
-        .arg("-n")
-        .arg("2p")
-        .stdin(w_stdout)
-        .stdout(s_stdout)
-        .spawn()?;
-    let _ = sed_output.wait()?;
-    let s_stdout = sed_output.stdout
-        .ok_or(CircadianError("w/sed command has no output".into()))?;
-    let awk_output = Command::new("awk")
-        .arg("{print NF}")
-        .stdin(s_stdout)
-        .output()?;
-    let num_fields: usize = String::from_utf8(awk_output.stdout)
-        .unwrap_or(String::new())
-        .trim()
-        .parse::<usize>()?;
-    Ok(num_fields)
-}
-
-// Returns tuple containing argument string to provide to `w` to have
-// the FROM field included, and the 0-indexed offset of the field.
-fn w_from_args() -> Result<(String, usize), CircadianError> {
-    // Ask for a fake user to get just the header and check if the
-    // FROM field is enabled.
-    let w_output = Command::new("w")
-        .arg("-us")
-        .arg("CIRCADIAN_FAKEUSER")
-        .output()?;
-    let w_fields: Vec<String> = w_output.stdout
-        .lines()
-        .nth(1) // second line is the header
-        .ok_or(CircadianError("w command has no output".into()))??
-        .split_whitespace().map(|x| x.to_owned()).collect();
-    let from_header = String::from("FROM");
-    let (hargs, args) = match w_fields.contains(&from_header) {
-        true => ("-hus".to_string(), "-us".to_string()),
-        false => ("-husf".to_string(), "-usf".to_string()),
-    };
-
-    // Do it again with FROM field on and find its index.
-    let w_output = Command::new("w")
-        .arg(&args)
-        .arg("CIRCADIAN_FAKEUSER")
-        .output()?;
-    let w_fields: Vec<String> = w_output.stdout
-        .lines()
-        .nth(1)
-        .ok_or(CircadianError("w command has no output".into()))??
-        .split_whitespace().map(|x| x.to_owned()).collect();
-    let idx = w_fields.iter()
-        .position(|x| x == &from_header)
-        .ok_or(CircadianError("w command arguments invalid".into()))?;
-    Ok((hargs, idx))
-}
-
 fn xauthority_from_cmdline(display: &str) -> Result<String, CircadianError> {
     // Look for PIDs of processes with a variety of X11-related names.
     let pgrep_out = Command::new("pgrep")
@@ -510,109 +400,99 @@ fn xauthority_for_uid(uid: u32, display: &str) -> String {
     }
 }
 
-/// Call 'w' command and return minimum idle time
-fn idle_w() -> IdleResult {
-    let num_fields = count_w_fields()?;
-    let w_stdout = Stdio::piped();
-    let mut w_output = Command::new("w")
-        .arg("-hus")
-        .stdout(w_stdout).spawn()?;
-    let _ = w_output.wait()?;
-    let w_stdout = w_output.stdout
-        .ok_or(CircadianError("w command has no output".into()))?;
-    // idle field is the second to last
-    let awk_output = Command::new("awk")
-        .arg(format!("{{print ${}}}", num_fields - 1))
-        .stdin(w_stdout)
-        .output()?;
-    let idle_times: Vec<u32> = String::from_utf8(awk_output.stdout)
-        .unwrap_or(String::new())
-        .split("\n")
-        .filter(|t| t.len() > 0)
-        .map(|t| parse_w_time(t))
-        .filter_map(|t| t.ok())
-        .collect();
-    Ok(idle_times.iter().cloned().fold(std::u32::MAX, std::cmp::min))
+fn idle_tty() -> IdleResult {
+    // Determines the minimum idle time across all active TTY devices.
+    //
+    // This function iterates through all entries in the "/dev" directory, checking for devices that
+    // start with "tty". It computes the idle time for each device by subtracting the last access
+    // time of the device from the current system time. The minimum idle time across all checked
+    // TTY devices is then returned.
+    //
+    // Returns:
+    // - `Ok(u32)` containing the minimum idle time (in seconds) if at least one TTY device is found.
+    // - `Err(CircadianError)` if no TTY devices are found or if there's an error while accessing any of the devices.
+    //
+    // # Errors
+    // This function will return an error if:
+    // - The "/dev" directory cannot be read.
+    // - Metadata of any device cannot be accessed.
+    // - The last accessed time of any device cannot be determined.
+    //
+    // # Example
+    // 
+    // ```
+    // match idle_tty() {
+    //     Ok(idle_time) => println!("Minimum idle time: {} seconds", idle_time),
+    //     Err(e) => eprintln!("Error: {}", e),
+    // }
+    // ```
+    let mut min_idle_time = std::u32::MAX;
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs() as u32;
+
+    for entry in std::fs::read_dir("/dev")? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.to_str().unwrap_or("").starts_with("/dev/tty") {
+            let metadata = std::fs::metadata(&path)?;
+            let access_time = metadata.accessed()?.duration_since(std::time::UNIX_EPOCH)?.as_secs() as u32;
+            let idle_time = now - access_time;
+            if idle_time < min_idle_time {
+                min_idle_time = idle_time;
+            }
+        }
+    }
+
+    if min_idle_time == std::u32::MAX {
+        Err(CircadianError("No TTY devices found.".to_string()))
+    } else {
+        Ok(min_idle_time)
+    }
 }
 
-/// Call idle command for each X display
-///
-/// 'cmd' should be a unix command that, given args 'args', prints the idle
-/// time in milliseconds.  It will be run with the DISPLAY env variable set
-/// and with the uid of the user that owns the DISPLAY, for every running
-/// X display.  The minimum of all found idle times is returned.
-fn idle_fn(cmd: &str, args: Vec<&str>) -> IdleResult {
-    let mut display_mins: Vec<u32> = Vec::<u32>::new();
-    let (w_args, from_idx) = w_from_args()?;
-    println_vb4!("cmd: {} / w args: '{}' / w field: {}", cmd, w_args, from_idx);
+fn idle_display(cmd: &str, args: Vec<&str>) -> IdleResult {
+    // Executes a given command to determine the idle time for each active X11 display.
+    //
+    // This function searches for X11 display sockets in the /tmp/.X11-unix/ directory and
+    // executes a provided command (e.g., xprintidle, xssstate) to determine the idle time
+    // for each display. It handles multiple users by switching user contexts to both the
+    // display's owner and the root user. The lowest idle time across all displays is returned.
+    //
+    // # Arguments
+    // * `cmd` - A string slice that holds the name of the command to execute (e.g., "xprintidle").
+    // * `args` - A vector of string slices containing arguments to pass to the command.
+    //
+    // # Returns
+    // * `IdleResult` - Ok(u32) containing the minimum idle time (in seconds) across all displays,
+    //                  or an Err(CircadianError) if no displays are found.
+    //
+    // # Errors
+    // This function may return a `CircadianError` if:
+    // * There is an error while reading the X11 display sockets or their metadata.
+    // * There is an issue executing the provided command for any of the detected displays.
+    //
+    // # Example
+    // ```
+    // match idle_display("xprintidle", vec![]) {
+    //     Ok(idle_time) => println!("Minimum idle time across displays: {} seconds", idle_time),
+    //     Err(e) => eprintln!("Error: {}", e),
+    // }
+    // ```
+    let mut display_mins: Vec<u32> = Vec::new();
+    
     for device in glob("/tmp/.X11-unix/X*")? {
-        println_vb4!("  - socket: {:?}", device);
-        let device: String = match device {
+        let device = match device {
             Ok(p) => p.to_str().unwrap_or("0").to_owned(),
-            _ => "0".to_owned(),
+            Err(_) => "0".to_owned(),
         };
         let display = format!(":{}", device.chars().rev().next().unwrap_or('0'));
-        println_vb4!("    - display: {}", display);
-        let mut output = Command::new("w")
-            .arg(&w_args)
-            .stdout(Stdio::piped()).spawn()?;
-        let _ = output.wait()?;
-        let w_stdout = output.stdout
-            .ok_or(CircadianError("w command has no output".into()))?;
-        let awk_arg = format!("{{if (${} ~ /^{}/) print $1}}", from_idx + 1, display);
-        let output = Command::new("awk")
-            .arg(awk_arg)
-            .stdin(w_stdout)
-            .output()?;
-        let user_str = String::from_utf8(output.stdout)
-            .unwrap_or(String::new());
-        println_vb4!("    - awk users ({}): {}", user_str.len(), user_str.replace("\n", " / "));
-
-        // Get a list of all system users with open sessions to this
-        // X11 display, and de-duplicate by storing in a set.  There
-        // should be one per logged in user if a session manager is in
-        // use, plus one for each terminal the user has open.
-        let user_list: HashSet<&str> = user_str.split("\n")
-            .map(|x| x.trim())
-            .filter(|x| x.len() > 0)
-            .collect();
-        // Convert all of the user names to UIDs.
-        let mut user_list: HashSet<u32> = user_list.iter()
-            .filter_map(|x| match x.trim() {
-                user if user.len() > 0 => {
-                    match Command::new("id").arg("-u").arg(user).output() {
-                        Ok(output) => {
-                            let mut uid = String::from_utf8(output.stdout)
-                                .unwrap_or(String::new());
-                            uid.pop();
-                            let uid = uid.parse::<u32>().unwrap_or(0);
-                            Some(uid)
-                        },
-                        Err(_) => {
-                            None
-                        }
-                    }
-                },
-                _ => {
-                    None
-                }
-            })
-            .collect();
-        // Insert the UID of the socket owner, too.  This covers X
-        // servers spawned without session managers, i.e. those
-        // spawned with 'startx' or Xephyr.
-        let owner_uid = std::fs::metadata(&device)?.st_uid();
+        
+        let owner_uid = fs::metadata(&device)?.st_uid();
+        let mut user_list: HashSet<u32> = HashSet::new();
         user_list.insert(owner_uid);
-        // Always give it a try as root, too, since root can read
-        // xauth files from anywhere.
-        user_list.insert(0);
-        println_vb4!("    - socket owner: {}", owner_uid);
+        user_list.insert(0); // Add root UID
+        
         for uid in user_list {
-            println_vb4!("    - UID: {}", uid);
             let xauth = xauthority_for_uid(uid, &display);
-            println_vb4!("    - xauthority: {}", xauth);
-            // allow this command to fail, in case there are several X
-            // servers running.
             match Command::new(cmd)
                 .args(&args)
                 .uid(uid)
@@ -620,33 +500,41 @@ fn idle_fn(cmd: &str, args: Vec<&str>) -> IdleResult {
                 .env("XAUTHORITY", &xauth)
                 .output() {
                     Ok(output) => {
-                        let mut idle_str = String::from_utf8(output.stdout)
-                            .unwrap_or(String::new());
-                        idle_str.pop();
-                        let idle = idle_str.parse::<u32>().unwrap_or(std::u32::MAX)/1000;
-                        println_vb4!("      - idle: {}", idle);
-                        display_mins.push(idle);
+                        let idle_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                        if let Ok(idle) = idle_str.parse::<u32>() {
+                            let idle = idle / 1000;
+                            display_mins.push(idle);
+                        }
                     },
                     Err(e) => {
-                        println!("WARNING: {} failed for socket {} with error: {}", cmd, device, e);
+                        eprintln!("ERROR: {} failed for socket {} with error: {}", cmd, device, e);
                     },
                 }
         }
     }
-    match display_mins.len() {
-        0 => Err(CircadianError("No displays found.".to_string())),
-        _ => Ok(display_mins.iter().fold(std::u32::MAX, |acc, x| std::cmp::min(acc,*x)))
+    
+    if display_mins.is_empty() {
+        Err(CircadianError("No displays found.".to_string()))
+    } else {
+        Ok(*display_mins.iter().min().unwrap_or(&std::u32::MAX))
     }
 }
 
+// You need to implement or provide the following components for the code to be fully functional:
+// - `glob` function to match the `"/tmp/.X11-unix/X*"` pattern.
+// - `CircadianError` struct or type definition.
+// - `xauthority_for_uid` function which returns the xauthority path for a given user ID and display.
+// - Ensure that the `Command::new(cmd).uid(uid)` part works correctly on your system configuration.
+
+
 /// Call 'xprintidle' command and return idle time
 fn idle_xprintidle() -> IdleResult {
-    idle_fn("xprintidle", vec![])
+    idle_display("xprintidle", vec![])
 }
 
 /// Call 'xssstate' command and return idle time
 fn idle_xssstate() -> IdleResult {
-    idle_fn("xssstate", vec!["-i"])
+    idle_display("xssstate", vec!["-i"])
 }
 
 
@@ -900,7 +788,7 @@ fn read_config(file_path: &str) -> Result<CircadianConfig, CircadianError> {
 
 fn test_idle(config: &CircadianConfig, start: i64) -> IdleResponse {
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
-    let tty = idle_w();
+    let tty = idle_tty();
     let xssstate = idle_xssstate();
     let xprintidle = idle_xprintidle();
     let tty_idle = *tty.as_ref().unwrap_or(&std::u32::MAX);
@@ -915,8 +803,6 @@ fn test_idle(config: &CircadianConfig, start: i64) -> IdleResponse {
     let idle_remain: u64 =
             std::cmp::max(config.idle_time as i64 - min_idle as i64, 0) as u64;
     IdleResponse {
-        w_idle: tty,
-        w_enabled: config.tty_input,
         xssstate_idle: xssstate,
         xssstate_enabled: config.x11_input,
         xprintidle_idle: xprintidle,
@@ -1074,10 +960,7 @@ fn reschedule_auto_wake(auto_wake: Option<&String>, current_epoch: Option<AutoWa
 
 #[allow(dead_code)]
 fn test() {
-    println!("Sec: {:?}", parse_w_time("10.45s"));
-    println!("Sec: {:?}", parse_w_time("1:11"));
-    println!("Sec: {:?}", parse_w_time("0:10m"));
-    println!("w min: {:?}", idle_w());
+    println!("tty min: {:?}", idle_tty());
     println!("xssstate min: {:?}", idle_xssstate());
     println!("xprintidle min: {:?}", idle_xprintidle());
     println!("cpu: {:?}", thresh_cpu(CpuHistory::Min5, 0.3, std::cmp::PartialOrd::lt));
@@ -1118,10 +1001,6 @@ fn main() {
 
     if !config.tty_input && !config.x11_input {
         println!("tty_input or x11_input must be enabled.  Exiting.");
-        std::process::exit(1);
-    }
-    if config.tty_input && !command_exists("w") {
-        println!("'w' command required by tty_input failed.  Exiting.");
         std::process::exit(1);
     }
     if config.x11_input &&

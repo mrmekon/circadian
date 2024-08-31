@@ -23,7 +23,9 @@ verbosity = 0
 #
 # At least one of tty_input or x11_input must be 'yes'.
 #
-# Monitors the idle column of the 'w' command.
+# Monitors the idle time for each TTY device by subtracting the last access 
+# time of the device from the current system time. The minimum idle time across all checked
+# TTY devices is used.
 #
 # Default: yes
 tty_input = yes
