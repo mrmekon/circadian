@@ -732,28 +732,26 @@ fn exist_net_connection(conn: NetConnection) -> ExistResult {
 
 /// Determine whether audio is actively playing on any ALSA interface.
 fn exist_audio_alsa() -> ExistResult {
-    let mut count = 0;
-    for device in glob("/proc/asound/card*/pcm*/sub*/status")? {
-        if let Ok(path) = device {
-            let mut cat_output = Command::new("cat")
-                .arg(path)
-                .stderr(Stdio::null())
-                .stdout(Stdio::piped()).spawn()?;
-            let _ = cat_output.wait()?;
-            let stdout = cat_output.stdout
-                .ok_or(CircadianError("cat /proc/asound/* failed".to_string()))?;
-            let output = Command::new("grep")
-                .arg("state:")
-                .stdin(stdout)
-                .output()?;
-            let output_str = String::from_utf8(output.stdout)?;
-            let lines: Vec<&str> = output_str.split("\n")
-                .filter(|l| l.len() > 0)
-                .collect();
-            count += lines.len();
-        }
-    }
-    Ok(count > 0)
+    // The file /proc/asound/timers shows applications playing audio or has paused audio.
+    // Example:
+    //   Client application 12345 : running
+    //   Client application 54321 : stopped
+    let mut cat_output = Command::new("cat")
+        .arg("/proc/asound/timers")
+        .stderr(Stdio::null())
+        .stdout(Stdio::piped()).spawn()?;
+    let _ = cat_output.wait()?;
+    let stdout = cat_output.stdout
+        .ok_or(CircadianError("cat /proc/asound/timers failed".to_string()))?;
+    let output = Command::new("grep")
+        .arg("running")
+        .stdin(stdout)
+        .output()?;
+    let output_str = String::from_utf8(output.stdout)?;
+    let lines: Vec<&str> = output_str.split("\n")
+        .filter(|l| l.len() > 0)
+        .collect();
+    Ok(lines.len() > 0)
 }
 
 /// Determine whether audio is actively playing on any Pulseaudio interface.
